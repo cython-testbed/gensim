@@ -26,7 +26,7 @@ class LdaTransformer(TransformerMixin, BaseEstimator):
 
     def __init__(self, num_topics=100, id2word=None, chunksize=2000, passes=1, update_every=1, alpha='symmetric',
                  eta=None, decay=0.5, offset=1.0, eval_every=10, iterations=50, gamma_threshold=0.001,
-                 minimum_probability=0.01, random_state=None, scorer='perplexity'):
+                 minimum_probability=0.01, random_state=None, scorer='perplexity', dtype=np.float32):
         """
         Sklearn wrapper for LDA model. See gensim.model.LdaModel for parameter details.
 
@@ -50,6 +50,7 @@ class LdaTransformer(TransformerMixin, BaseEstimator):
         self.minimum_probability = minimum_probability
         self.random_state = random_state
         self.scorer = scorer
+        self.dtype = dtype
 
     def fit(self, X, y=None):
         """
@@ -67,7 +68,7 @@ class LdaTransformer(TransformerMixin, BaseEstimator):
             alpha=self.alpha, eta=self.eta, decay=self.decay, offset=self.offset,
             eval_every=self.eval_every, iterations=self.iterations,
             gamma_threshold=self.gamma_threshold, minimum_probability=self.minimum_probability,
-            random_state=self.random_state
+            random_state=self.random_state, dtype=self.dtype
         )
         return self
 
@@ -83,16 +84,11 @@ class LdaTransformer(TransformerMixin, BaseEstimator):
             raise NotFittedError("This model has not been fitted yet. Call 'fit' with appropriate arguments before using this method.")
 
         # The input as array of array
-        check = lambda x: [x] if isinstance(x[0], tuple) else x
-        docs = check(docs)
-        X = [[] for _ in range(0, len(docs))]
-
-        for k, v in enumerate(docs):
-            doc_topics = self.gensim_model[v]
-            # returning dense representation for compatibility with sklearn but we should go back to sparse representation in the future
-            probs_docs = matutils.sparse2full(doc_topics, self.num_topics)
-            X[k] = probs_docs
-        return np.reshape(np.array(X), (len(docs), self.num_topics))
+        if isinstance(docs[0], tuple):
+            docs = [docs]
+        # returning dense representation for compatibility with sklearn but we should go back to sparse representation in the future
+        distribution = [matutils.sparse2full(self.gensim_model[doc], self.num_topics) for doc in docs]
+        return np.reshape(np.array(distribution), (len(docs), self.num_topics))
 
     def partial_fit(self, X):
         """
@@ -114,7 +110,8 @@ class LdaTransformer(TransformerMixin, BaseEstimator):
                 chunksize=self.chunksize, passes=self.passes, update_every=self.update_every,
                 alpha=self.alpha, eta=self.eta, decay=self.decay, offset=self.offset,
                 eval_every=self.eval_every, iterations=self.iterations, gamma_threshold=self.gamma_threshold,
-                minimum_probability=self.minimum_probability, random_state=self.random_state
+                minimum_probability=self.minimum_probability, random_state=self.random_state,
+                dtype=self.dtype
             )
 
         self.gensim_model.update(corpus=X)
