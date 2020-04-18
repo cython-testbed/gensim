@@ -8,7 +8,8 @@
 
 from __future__ import with_statement
 
-from collections import Mapping, defaultdict
+from collections import defaultdict
+from collections.abc import Mapping
 import sys
 import logging
 import itertools
@@ -16,8 +17,7 @@ import itertools
 from gensim import utils
 
 from six import PY3, iteritems, iterkeys, itervalues, string_types
-from six.moves import xrange
-from six.moves import zip as izip
+from six.moves import zip, range
 
 if sys.version_info[0] >= 3:
     unicode = str
@@ -37,6 +37,8 @@ class Dictionary(utils.SaveLoad, Mapping):
         token -> tokenId.
     id2token : dict of (int, str)
         Reverse mapping for token2id, initialized in a lazy manner to save memory (not created until needed).
+    cfs : dict of (int, int)
+        Collection frequencies: token_id -> how many instances of this token are contained in the documents.
     dfs : dict of (int, int)
         Document frequencies: token_id -> how many documents contain this token.
     num_docs : int
@@ -75,6 +77,7 @@ class Dictionary(utils.SaveLoad, Mapping):
         """
         self.token2id = {}
         self.id2token = {}
+        self.cfs = {}
         self.dfs = {}
 
         self.num_docs = 0
@@ -232,7 +235,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -265,10 +267,10 @@ class Dictionary(utils.SaveLoad, Mapping):
             self.num_docs += 1
             self.num_pos += sum(itervalues(counter))
             self.num_nnz += len(result)
-            # increase document count for each unique token that appeared in the document
-            dfs = self.dfs
-            for tokenid in iterkeys(result):
-                dfs[tokenid] = dfs.get(tokenid, 0) + 1
+            # keep track of document and collection frequencies
+            for tokenid, freq in iteritems(result):
+                self.cfs[tokenid] = self.cfs.get(tokenid, 0) + freq
+                self.dfs[tokenid] = self.dfs.get(tokenid, 0) + 1
 
         # return tokenids, in ascending id order
         result = sorted(iteritems(result))
@@ -340,7 +342,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -358,17 +359,18 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         # determine which tokens to keep
         if keep_tokens:
-            keep_ids = [self.token2id[v] for v in keep_tokens if v in self.token2id]
-            good_ids = (
+            keep_ids = {self.token2id[v] for v in keep_tokens if v in self.token2id}
+            good_ids = [
                 v for v in itervalues(self.token2id)
                 if no_below <= self.dfs.get(v, 0) <= no_above_abs or v in keep_ids
-            )
+            ]
+            good_ids.sort(key=lambda x: self.num_docs if x in keep_ids else self.dfs.get(x, 0), reverse=True)
         else:
-            good_ids = (
+            good_ids = [
                 v for v in itervalues(self.token2id)
                 if no_below <= self.dfs.get(v, 0) <= no_above_abs
-            )
-        good_ids = sorted(good_ids, key=self.dfs.get, reverse=True)
+            ]
+            good_ids.sort(key=self.dfs.get, reverse=True)
         if keep_n is not None:
             good_ids = good_ids[:keep_n]
         bad_words = [(self[idx], self.dfs.get(idx, 0)) for idx in set(self).difference(good_ids)]
@@ -392,7 +394,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -431,7 +432,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -453,10 +453,12 @@ class Dictionary(utils.SaveLoad, Mapping):
         if bad_ids is not None:
             bad_ids = set(bad_ids)
             self.token2id = {token: tokenid for token, tokenid in iteritems(self.token2id) if tokenid not in bad_ids}
+            self.cfs = {tokenid: freq for tokenid, freq in iteritems(self.cfs) if tokenid not in bad_ids}
             self.dfs = {tokenid: freq for tokenid, freq in iteritems(self.dfs) if tokenid not in bad_ids}
         if good_ids is not None:
             good_ids = set(good_ids)
             self.token2id = {token: tokenid for token, tokenid in iteritems(self.token2id) if tokenid in good_ids}
+            self.cfs = {tokenid: freq for tokenid, freq in iteritems(self.cfs) if tokenid in good_ids}
             self.dfs = {tokenid: freq for tokenid, freq in iteritems(self.dfs) if tokenid in good_ids}
         self.compactify()
 
@@ -465,12 +467,13 @@ class Dictionary(utils.SaveLoad, Mapping):
         logger.debug("rebuilding dictionary, shrinking gaps")
 
         # build mapping from old id -> new id
-        idmap = dict(izip(sorted(itervalues(self.token2id)), xrange(len(self.token2id))))
+        idmap = dict(zip(sorted(itervalues(self.token2id)), range(len(self.token2id))))
 
         # reassign mappings to new ids
         self.token2id = {token: idmap[tokenid] for token, tokenid in iteritems(self.token2id)}
         self.id2token = {}
         self.dfs = {idmap[tokenid]: freq for tokenid, freq in iteritems(self.dfs)}
+        self.cfs = {idmap[tokenid]: freq for tokenid, freq in iteritems(self.cfs)}
 
     def save_as_text(self, fname, sort_by_word=True):
         """Save :class:`~gensim.corpora.dictionary.Dictionary` to a text file.
@@ -520,7 +523,7 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         """
         logger.info("saving dictionary mapping to %s", fname)
-        with utils.smart_open(fname, 'wb') as fout:
+        with utils.open(fname, 'wb') as fout:
             numdocs_line = "%d\n" % self.num_docs
             fout.write(utils.to_utf8(numdocs_line))
             if sort_by_word:
@@ -556,7 +559,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -594,6 +596,52 @@ class Dictionary(utils.SaveLoad, Mapping):
         import gensim.models
         return gensim.models.VocabTransform(old2new)
 
+    def patch_with_special_tokens(self, special_token_dict):
+        """Patch token2id and id2token using a dictionary of special tokens.
+
+
+        **Usecase:** when doing sequence modeling (e.g. named entity recognition), one may  want to specify
+        special tokens that behave differently than others.
+        One example is the "unknown" token, and another is the padding token.
+        It is usual to set the padding token to have index `0`, and patching the dictionary with `{'<PAD>': 0}`
+        would be one way to specify this.
+
+        Parameters
+        ----------
+        special_token_dict : dict of (str, int)
+            dict containing the special tokens as keys and their wanted indices as values.
+
+        Examples
+        --------
+        .. sourcecode:: pycon
+
+            >>> from gensim.corpora import Dictionary
+            >>>
+            >>> corpus = [["máma", "mele", "maso"], ["ema", "má", "máma"]]
+            >>> dct = Dictionary(corpus)
+            >>>
+            >>> special_tokens = {'pad': 0, 'space': 1}
+            >>> print(dct.token2id)
+            {'maso': 0, 'mele': 1, 'máma': 2, 'ema': 3, 'má': 4}
+            >>>
+            >>> dct.patch_with_special_tokens(special_tokens)
+            >>> print(dct.token2id)
+            {'maso': 6, 'mele': 7, 'máma': 2, 'ema': 3, 'má': 4, 'pad': 0, 'space': 1}
+
+        """
+        possible_ids = []
+        for token, idx in special_token_dict.items():
+            if token in self.token2id and self.token2id[token] == idx:
+                continue
+            if token in self.token2id and self.token2id[token] != idx:
+                possible_ids.append(self.token2id[token])
+                del self.token2id[token]
+            old_token = self[idx]
+            self.token2id[token] = idx
+            self.token2id[old_token] = possible_ids.pop() if \
+                                       len(possible_ids) > 0 else len(self.token2id) - 1
+        self.id2token = {}  # Make sure that id2token is updated according to special tokens.
+
     @staticmethod
     def load_from_text(fname):
         """Load a previously stored :class:`~gensim.corpora.dictionary.Dictionary` from a text file.
@@ -612,7 +660,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -629,7 +676,7 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         """
         result = Dictionary()
-        with utils.smart_open(fname) as f:
+        with utils.open(fname, 'rb') as f:
             for lineno, line in enumerate(f):
                 line = utils.to_unicode(line)
                 if lineno == 0:
@@ -677,7 +724,6 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.corpora import Dictionary
@@ -702,7 +748,7 @@ class Dictionary(utils.SaveLoad, Mapping):
 
         if id2word is None:
             # make sure length(result) == get_max_id(corpus) + 1
-            result.token2id = {unicode(i): i for i in xrange(max_id + 1)}
+            result.token2id = {unicode(i): i for i in range(max_id + 1)}
         else:
             # id=>word mapping given: simply copy it
             result.token2id = {utils.to_unicode(token): idx for idx, token in iteritems(id2word)}

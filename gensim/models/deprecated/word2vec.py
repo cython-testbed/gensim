@@ -157,14 +157,11 @@ from scipy.special import expit
 from gensim import utils
 from gensim import matutils  # utility fnc for pickling, common scipy operations etc
 from six import iteritems, itervalues, string_types
-from six.moves import xrange
+from six.moves import range
 from types import GeneratorType
 
 logger = logging.getLogger(__name__)
 
-
-# failed... fall back to plain numpy (20-80x slower training than the above)
-FAST_VERSION = -1
 MAX_WORDS_IN_BATCH = 10000
 
 
@@ -232,8 +229,8 @@ def train_batch_sg(model, sentences, alpha, work=None, compute_loss=False):
     """
     result = 0
     for sentence in sentences:
-        word_vocabs = [model.wv.vocab[w] for w in sentence if w in model.wv.vocab and
-                       model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
+        word_vocabs = [model.wv.vocab[w] for w in sentence if w in model.wv.vocab
+                       and model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
         for pos, word in enumerate(word_vocabs):
             reduced_window = model.random.randint(model.window)  # `b` in the original word2vec code
 
@@ -263,8 +260,8 @@ def train_batch_cbow(model, sentences, alpha, work=None, neu1=None, compute_loss
     """
     result = 0
     for sentence in sentences:
-        word_vocabs = [model.wv.vocab[w] for w in sentence if w in model.wv.vocab and
-                       model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
+        word_vocabs = [model.wv.vocab[w] for w in sentence if w in model.wv.vocab
+                       and model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
         for pos, word in enumerate(word_vocabs):
             reduced_window = model.random.randint(model.window)  # `b` in the original word2vec code
             start = max(0, pos - model.window + reduced_window)
@@ -588,11 +585,6 @@ class Word2Vec(SaveLoad):
 
         self.load = call_on_class_only
 
-        if FAST_VERSION == -1:
-            logger.warning('Slow version of %s is being used', __name__)
-        else:
-            logger.debug('Fast version of %s is being used', __name__)
-
         self.initialize_word_vectors()
         self.sg = int(sg)
         self.cum_table = None  # for negative sampling
@@ -658,10 +650,10 @@ class Word2Vec(SaveLoad):
         self.cum_table = zeros(vocab_size, dtype=uint32)
         # compute sum of all power (Z in paper)
         train_words_pow = 0.0
-        for word_index in xrange(vocab_size):
+        for word_index in range(vocab_size):
             train_words_pow += self.wv.vocab[self.wv.index2word[word_index]].count**power
         cumulative = 0.0
-        for word_index in xrange(vocab_size):
+        for word_index in range(vocab_size):
             cumulative += self.wv.vocab[self.wv.index2word[word_index]].count**power
             self.cum_table[word_index] = round(cumulative / train_words_pow * domain)
         if len(self.cum_table) > 0:
@@ -678,7 +670,7 @@ class Word2Vec(SaveLoad):
         # build the huffman tree
         heap = list(itervalues(self.wv.vocab))
         heapq.heapify(heap)
-        for i in xrange(len(self.wv.vocab) - 1):
+        for i in range(len(self.wv.vocab) - 1):
             min1, min2 = heapq.heappop(heap), heapq.heappop(heap)
             heapq.heappush(
                 heap, Vocab(count=min1.count + min2.count, index=i + len(self.wv.vocab), left=min1, right=min2)
@@ -1007,16 +999,6 @@ class Word2Vec(SaveLoad):
         """
         if self.model_trimmed_post_training:
             raise RuntimeError("Parameters for training were discarded using model_trimmed_post_training method")
-        if FAST_VERSION < 0:
-            warnings.warn(
-                "C extension not loaded for Word2Vec, training will be slow. "
-                "Install a C compiler and reinstall gensim for fast training."
-            )
-            self.neg_labels = []
-            if self.negative > 0:
-                # precompute negative labels optimization for pure-python training
-                self.neg_labels = zeros(self.negative + 1)
-                self.neg_labels[0] = 1.
 
         if compute_loss:
             self.compute_loss = compute_loss
@@ -1135,7 +1117,7 @@ class Word2Vec(SaveLoad):
                 )
 
             # give the workers heads up that they can finish -- no more work!
-            for _ in xrange(self.workers):
+            for _ in range(self.workers):
                 job_queue.put(None)
             logger.debug("job loop exiting, total %i jobs", job_no)
 
@@ -1143,7 +1125,7 @@ class Word2Vec(SaveLoad):
         job_queue = Queue(maxsize=queue_factor * self.workers)
         progress_queue = Queue(maxsize=(queue_factor + 1) * self.workers)
 
-        workers = [threading.Thread(target=worker_loop) for _ in xrange(self.workers)]
+        workers = [threading.Thread(target=worker_loop) for _ in range(self.workers)]
         unfinished_worker_count = len(workers)
         workers.append(threading.Thread(target=job_producer))
 
@@ -1234,12 +1216,6 @@ class Word2Vec(SaveLoad):
         .. [#deepir] https://github.com/piskvorky/gensim/blob/develop/docs/notebooks/deepir.ipynb
 
         """
-        if FAST_VERSION < 0:
-            warnings.warn(
-                "C extension compilation failed, scoring will be slow. "
-                "Install a C compiler and reinstall gensim for fastness."
-            )
-
         logger.info(
             "scoring sentences with %i workers on %i vocabulary and %i features, "
             "using sg=%s hs=%s sample=%s and negative=%s",
@@ -1280,7 +1256,7 @@ class Word2Vec(SaveLoad):
         job_queue = Queue(maxsize=queue_factor * self.workers)
         progress_queue = Queue(maxsize=(queue_factor + 1) * self.workers)
 
-        workers = [threading.Thread(target=worker_loop) for _ in xrange(self.workers)]
+        workers = [threading.Thread(target=worker_loop) for _ in range(self.workers)]
         for thread in workers:
             thread.daemon = True  # make interrupting the process with ctrl+c easier
             thread.start()
@@ -1307,7 +1283,7 @@ class Word2Vec(SaveLoad):
                 job_queue.put(items)
             except StopIteration:
                 logger.info("reached end of input; waiting to finish %i outstanding jobs", job_no - done_jobs + 1)
-                for _ in xrange(self.workers):
+                for _ in range(self.workers):
                     job_queue.put(None)  # give the workers heads up that they can finish -- no more work!
                 push_done = True
             try:
@@ -1354,7 +1330,7 @@ class Word2Vec(SaveLoad):
         newsyn0 = empty((gained_vocab, self.vector_size), dtype=REAL)
 
         # randomize the remaining words
-        for i in xrange(len(self.wv.syn0), len(self.wv.vocab)):
+        for i in range(len(self.wv.syn0), len(self.wv.vocab)):
             # construct deterministic seed from word AND seed argument
             newsyn0[i - len(self.wv.syn0)] = self.seeded_vector(self.wv.index2word[i] + str(self.seed))
 
@@ -1381,7 +1357,7 @@ class Word2Vec(SaveLoad):
         logger.info("resetting layer weights")
         self.wv.syn0 = empty((len(self.wv.vocab), self.vector_size), dtype=REAL)
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
-        for i in xrange(len(self.wv.vocab)):
+        for i in range(len(self.wv.vocab)):
             # construct deterministic seed from word AND seed argument
             self.wv.syn0[i] = self.seeded_vector(self.wv.index2word[i] + str(self.seed))
         if self.hs:
@@ -1413,7 +1389,7 @@ class Word2Vec(SaveLoad):
         """
         overlap_count = 0
         logger.info("loading projection weights from %s", fname)
-        with utils.smart_open(fname) as fin:
+        with utils.open(fname, 'rb') as fin:
             header = utils.to_unicode(fin.readline(), encoding=encoding)
             vocab_size, vector_size = (int(x) for x in header.split())  # throws for invalid file format
             if not vector_size == self.vector_size:
@@ -1421,7 +1397,7 @@ class Word2Vec(SaveLoad):
                 # TOCONSIDER: maybe mismatched vectors still useful enough to merge (truncating/padding)?
             if binary:
                 binary_len = dtype(REAL).itemsize * vector_size
-                for _ in xrange(vocab_size):
+                for _ in range(vocab_size):
                     # mixed text and binary: read text first, then binary
                     word = []
                     while True:
@@ -1699,16 +1675,17 @@ class BrownCorpus(object):
             fname = os.path.join(self.dirname, fname)
             if not os.path.isfile(fname):
                 continue
-            for line in utils.smart_open(fname):
-                line = utils.to_unicode(line)
-                # each file line is a single sentence in the Brown corpus
-                # each token is WORD/POS_TAG
-                token_tags = [t.split('/') for t in line.split() if len(t.split('/')) == 2]
-                # ignore words with non-alphabetic tags like ",", "!" etc (punctuation, weird stuff)
-                words = ["%s/%s" % (token.lower(), tag[:2]) for token, tag in token_tags if tag[:2].isalpha()]
-                if not words:  # don't bother sending out empty sentences
-                    continue
-                yield words
+            with utils.open(fname, 'rb') as fin:
+                for line in fin:
+                    line = utils.to_unicode(line)
+                    # each file line is a single sentence in the Brown corpus
+                    # each token is WORD/POS_TAG
+                    token_tags = [t.split('/') for t in line.split() if len(t.split('/')) == 2]
+                    # ignore words with non-alphabetic tags like ",", "!" etc (punctuation, weird stuff)
+                    words = ["%s/%s" % (token.lower(), tag[:2]) for token, tag in token_tags if tag[:2].isalpha()]
+                    if not words:  # don't bother sending out empty sentences
+                        continue
+                    yield words
 
 
 class Text8Corpus(object):
@@ -1722,7 +1699,7 @@ class Text8Corpus(object):
         # the entire corpus is one gigantic line -- there are no sentence marks at all
         # so just split the sequence of tokens arbitrarily: 1 sentence = 1000 tokens
         sentence, rest = [], b''
-        with utils.smart_open(self.fname) as fin:
+        with utils.open(self.fname, 'rb') as fin:
             while True:
                 text = rest + fin.read(8192)  # avoid loading the entire file (=1 line) into RAM
                 if text == rest:  # EOF
@@ -1778,7 +1755,7 @@ class LineSentence(object):
                     i += self.max_sentence_length
         except AttributeError:
             # If it didn't work like a file, use it as a string filename
-            with utils.smart_open(self.source) as fin:
+            with utils.open(self.source, 'rb') as fin:
                 for line in itertools.islice(fin, self.limit):
                     line = utils.to_unicode(line).split()
                     i = 0
@@ -1833,7 +1810,7 @@ class PathLineSentences(object):
         """iterate through the files"""
         for file_name in self.input_files:
             logger.info('reading file %s', file_name)
-            with utils.smart_open(file_name) as fin:
+            with utils.open(file_name, 'rb') as fin:
                 for line in itertools.islice(fin, self.limit):
                     line = utils.to_unicode(line).split()
                     i = 0
@@ -1851,7 +1828,6 @@ if __name__ == "__main__":
         level=logging.INFO
     )
     logger.info("running %s", " ".join(sys.argv))
-    logger.info("using optimization %s", FAST_VERSION)
 
     # check and process cmdline input
     program = os.path.basename(sys.argv[0])

@@ -16,7 +16,7 @@ The structure is called "KeyedVectors" and is essentially a mapping between *ent
 and *vectors*. Each entity is identified by its string id, so this is a mapping between {str => 1D numpy array}.
 
 The entity typically corresponds to a word (so the mapping maps words to 1D vectors),
-but for some models, they key can also correspond to a document, a graph node etc. To generalize
+but for some models, the key can also correspond to a document, a graph node etc. To generalize
 over different use-cases, this module calls the keys **entities**. Each entity is
 always represented by its string id, no matter whether the entity is a word, a document or a graph node.
 
@@ -66,6 +66,7 @@ For example, using the Word2Vec algorithm to train the vectors
     >>> word_vectors = model.wv
 
 Persist the word vectors to disk with
+
 .. sourcecode:: pycon
 
     >>> from gensim.test.utils import get_tmpfile
@@ -90,6 +91,7 @@ What can I do with word vectors?
 
 You can perform various syntactic/semantic NLP word tasks with the trained vectors.
 Some of them are already built-in
+
 .. sourcecode:: pycon
 
     >>> import gensim.downloader as api
@@ -158,34 +160,37 @@ and so on.
 
 from __future__ import division  # py3 "true division"
 
-from collections import deque
 from itertools import chain
 import logging
+from numbers import Integral
 
 try:
     from queue import Queue, Empty
 except ImportError:
     from Queue import Queue, Empty  # noqa:F401
 
-# If pyemd C extension is available, import it.
-# If pyemd is attempted to be used, but isn't installed, ImportError will be raised in wmdistance
-try:
-    from pyemd import emd
-    PYEMD_EXT = True
-except ImportError:
-    PYEMD_EXT = False
-
-from numpy import dot, float32 as REAL, empty, memmap as np_memmap, \
+from numpy import dot, float32 as REAL, memmap as np_memmap, \
     double, array, zeros, vstack, sqrt, newaxis, integer, \
-    ndarray, sum as np_sum, prod, argmax, divide as np_divide
+    ndarray, sum as np_sum, prod, argmax
 import numpy as np
+
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
 from gensim.corpora.dictionary import Dictionary
 from six import string_types, integer_types
-from six.moves import xrange, zip
-from scipy import sparse, stats
+from six.moves import zip, range
+from scipy import stats
 from gensim.utils import deprecated
-from gensim.models.utils_any2vec import _save_word2vec_format, _load_word2vec_format, _compute_ngrams, _ft_hash
+from gensim.models.utils_any2vec import (
+    _save_word2vec_format,
+    _load_word2vec_format,
+    ft_ngram_hashes,
+)
+from gensim.similarities.termsim import TermSimilarityIndex, SparseTermSimilarityMatrix
+
+#
+# For backwards compatibility, see https://github.com/RaRe-Technologies/gensim/issues/2201
+#
+from gensim.models.deprecated.keyedvectors import EuclideanKeyedVectors  # noqa
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +215,7 @@ class Vocab(object):
 class BaseKeyedVectors(utils.SaveLoad):
     """Abstract base class / interface for various types of word vectors."""
     def __init__(self, vector_size):
-        self.vectors = zeros((0, vector_size))
+        self.vectors = zeros((0, vector_size), dtype=REAL)
         self.vocab = {}
         self.vector_size = vector_size
         self.index2entity = []
@@ -278,7 +283,7 @@ class BaseKeyedVectors(utils.SaveLoad):
         ----------
         entities : list of str
             Entities specified by string ids.
-        weights: {list of numpy.ndarray, numpy.ndarray}
+        weights: list of numpy.ndarray or numpy.ndarray
             List of 1D np.array vectors or a 2D np.array of vectors.
         replace: bool, optional
             Flag indicating whether to replace vectors for entities which already exist in the vocabulary,
@@ -303,7 +308,7 @@ class BaseKeyedVectors(utils.SaveLoad):
             self.index2entity.append(entity)
 
         # add vectors for new entities
-        self.vectors = vstack((self.vectors, weights[~in_vocab_mask]))
+        self.vectors = vstack((self.vectors, weights[~in_vocab_mask].astype(self.vectors.dtype)))
 
         # change vectors for in_vocab entities if `replace` flag is specified
         if replace:
@@ -319,7 +324,7 @@ class BaseKeyedVectors(utils.SaveLoad):
         ----------
         entities : {str, list of str}
             Entities specified by their string ids.
-        weights: {list of numpy.ndarray, numpy.ndarray}
+        weights: list of numpy.ndarray or numpy.ndarray
             List of 1D np.array vectors or 2D np.array of vectors.
 
         """
@@ -390,22 +395,22 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         self.index2word = value
 
     @property
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors instead")
     def syn0(self):
         return self.vectors
 
     @syn0.setter
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors instead")
     def syn0(self, value):
         self.vectors = value
 
     @property
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors_norm instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors_norm instead")
     def syn0norm(self):
         return self.vectors_norm
 
     @syn0norm.setter
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors_norm instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors_norm instead")
     def syn0norm(self, value):
         self.vectors_norm = value
 
@@ -498,8 +503,9 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
             List of words that contribute positively.
         negative : list of str, optional
             List of words that contribute negatively.
-        topn : int, optional
-            Number of top-N similar words to return.
+        topn : int or None, optional
+            Number of top-N similar words to return, when `topn` is int. When `topn` is None,
+            then similarities for all words are returned.
         restrict_vocab : int, optional
             Optional integer which limits the range of vectors which
             are searched for most-similar values. For example, restrict_vocab=10000 would
@@ -508,10 +514,15 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
 
         Returns
         -------
-        list of (str, float)
-            Sequence of (word, similarity).
+        list of (str, float) or numpy.array
+            When `topn` is int, a sequence of (word, similarity) is returned.
+            When `topn` is None, then similarities for all words are returned as a
+            one-dimensional numpy array with the size of the vocabulary.
 
         """
+        if isinstance(topn, Integral) and topn < 1:
+            return []
+
         if positive is None:
             positive = []
         if negative is None:
@@ -546,7 +557,7 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
             raise ValueError("cannot compute similarity with no input")
         mean = matutils.unitvec(array(mean).mean(axis=0)).astype(REAL)
 
-        if indexer is not None:
+        if indexer is not None and isinstance(topn, int):
             return indexer.most_similar(mean, topn)
 
         limited = self.vectors_norm if restrict_vocab is None else self.vectors_norm[:restrict_vocab]
@@ -565,8 +576,8 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         ----------
         word : str
             Word
-        topn : {int, False}, optional
-            Number of top-N similar words to return. If topn is False, similar_by_word returns
+        topn : int or None, optional
+            Number of top-N similar words to return. If topn is None, similar_by_word returns
             the vector of similarity scores.
         restrict_vocab : int, optional
             Optional integer which limits the range of vectors which
@@ -576,8 +587,10 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
 
         Returns
         -------
-        list of (str, float)
-            Sequence of (word, similarity).
+        list of (str, float) or numpy.array
+            When `topn` is int, a sequence of (word, similarity) is returned.
+            When `topn` is None, then similarities for all words are returned as a
+            one-dimensional numpy array with the size of the vocabulary.
 
         """
         return self.most_similar(positive=[word], topn=topn, restrict_vocab=restrict_vocab)
@@ -589,9 +602,9 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         ----------
         vector : numpy.array
             Vector from which similarities are to be computed.
-        topn : {int, False}, optional
-            Number of top-N similar words to return. If topn is False, similar_by_vector returns
-            the vector of similarity scores.
+        topn : int or None, optional
+            Number of top-N similar words to return, when `topn` is int. When `topn` is None,
+            then similarities for all words are returned.
         restrict_vocab : int, optional
             Optional integer which limits the range of vectors which
             are searched for most-similar values. For example, restrict_vocab=10000 would
@@ -600,12 +613,17 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
 
         Returns
         -------
-        list of (str, float)
-            Sequence of (word, similarity).
+        list of (str, float) or numpy.array
+            When `topn` is int, a sequence of (word, similarity) is returned.
+            When `topn` is None, then similarities for all words are returned as a
+            one-dimensional numpy array with the size of the vocabulary.
 
         """
         return self.most_similar(positive=[vector], topn=topn, restrict_vocab=restrict_vocab)
 
+    @deprecated(
+        "Method will be removed in 4.0.0, use "
+        "gensim.models.keyedvectors.WordEmbeddingSimilarityIndex instead")
     def similarity_matrix(self, dictionary, tfidf=None, threshold=0.0, exponent=2.0, nonzero_limit=100, dtype=REAL):
         """Construct a term similarity matrix for computing Soft Cosine Measure.
 
@@ -615,24 +633,21 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         Parameters
         ----------
         dictionary : :class:`~gensim.corpora.dictionary.Dictionary`
-            A dictionary that specifies a mapping between words and the indices of rows and columns
-            of the resulting term similarity matrix.
-        tfidf : :class:`gensim.models.tfidfmodel.TfidfModel`, optional
-            A model that specifies the relative importance of the terms in the dictionary. The rows
-            of the term similarity matrix will be build in a decreasing order of importance of terms,
-            or in the order of term identifiers if None.
+            A dictionary that specifies the considered terms.
+        tfidf : :class:`gensim.models.tfidfmodel.TfidfModel` or None, optional
+            A model that specifies the relative importance of the terms in the dictionary. The
+            columns of the term similarity matrix will be build in a decreasing order of importance
+            of terms, or in the order of term identifiers if None.
         threshold : float, optional
-            Only pairs of words whose embeddings are more similar than `threshold` are considered
-            when building the sparse term similarity matrix.
+            Only embeddings more similar than `threshold` are considered when retrieving word
+            embeddings closest to a given word embedding.
         exponent : float, optional
-            The exponent applied to the similarity between two word embeddings when building the term similarity matrix.
+            Take the word embedding similarities larger than `threshold` to the power of `exponent`.
         nonzero_limit : int, optional
-            The maximum number of non-zero elements outside the diagonal in a single row or column
-            of the term similarity matrix. Setting `nonzero_limit` to a constant ensures that the
-            time complexity of computing the Soft Cosine Measure will be linear in the document
-            length rather than quadratic.
+            The maximum number of non-zero elements outside the diagonal in a single column of the
+            sparse term similarity matrix.
         dtype : numpy.dtype, optional
-            Data-type of the term similarity matrix.
+            Data-type of the sparse term similarity matrix.
 
         Returns
         -------
@@ -654,66 +669,10 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         <http://www.aclweb.org/anthology/S/S17/S17-2051.pdf>`_.
 
         """
-        logger.info("constructing a term similarity matrix")
-        matrix_order = len(dictionary)
-        matrix_nonzero = [1] * matrix_order
-        matrix = sparse.identity(matrix_order, dtype=dtype, format="dok")
-        num_skipped = 0
-        # Decide the order of rows.
-        if tfidf is None:
-            word_indices = deque(sorted(dictionary.keys()))
-        else:
-            assert max(tfidf.idfs) < matrix_order
-            word_indices = deque([
-                index for index, _
-                in sorted(tfidf.idfs.items(), key=lambda x: (x[1], -x[0]), reverse=True)
-            ])
-
-        # Traverse rows.
-        for row_number, w1_index in enumerate(list(word_indices)):
-            word_indices.popleft()
-            if row_number % 1000 == 0:
-                logger.info(
-                    "PROGRESS: at %.02f%% rows (%d / %d, %d skipped, %.06f%% density)",
-                    100.0 * (row_number + 1) / matrix_order, row_number + 1, matrix_order,
-                    num_skipped, 100.0 * matrix.getnnz() / matrix_order**2)
-            w1 = dictionary[w1_index]
-            if w1 not in self.vocab:
-                num_skipped += 1
-                continue  # A word from the dictionary is not present in the word2vec model.
-
-            # Traverse upper triangle columns.
-            if matrix_order <= nonzero_limit + 1:  # Traverse all columns.
-                columns = (
-                    (w2_index, self.similarity(w1, dictionary[w2_index]))
-                    for w2_index in word_indices
-                    if dictionary[w2_index] in self.vocab)
-            else:  # Traverse only columns corresponding to the embeddings closest to w1.
-                num_nonzero = matrix_nonzero[w1_index] - 1
-                columns = (
-                    (dictionary.token2id[w2], similarity)
-                    for _, (w2, similarity)
-                    in zip(
-                        range(nonzero_limit - num_nonzero),
-                        self.most_similar(positive=[w1], topn=nonzero_limit - num_nonzero)
-                    )
-                    if w2 in dictionary.token2id
-                )
-                columns = sorted(columns, key=lambda x: x[0])
-
-            for w2_index, similarity in columns:
-                # Ensure that we don't exceed `nonzero_limit` by mirroring the upper triangle.
-                if similarity > threshold and matrix_nonzero[w2_index] <= nonzero_limit:
-                    element = similarity**exponent
-                    matrix[w1_index, w2_index] = element
-                    matrix_nonzero[w1_index] += 1
-                    matrix[w2_index, w1_index] = element
-                    matrix_nonzero[w2_index] += 1
-        logger.info(
-            "constructed a term similarity matrix with %0.6f %% nonzero elements",
-            100.0 * matrix.getnnz() / matrix_order**2
-        )
-        return matrix.tocsc()
+        index = WordEmbeddingSimilarityIndex(self, threshold=threshold, exponent=exponent)
+        similarity_matrix = SparseTermSimilarityMatrix(
+            index, dictionary, tfidf=tfidf, nonzero_limit=nonzero_limit, dtype=dtype)
+        return similarity_matrix.matrix
 
     def wmdistance(self, document1, document2):
         """Compute the Word Mover's Distance between two documents.
@@ -752,8 +711,10 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
             If `pyemd <https://pypi.org/project/pyemd/>`_  isn't installed.
 
         """
-        if not PYEMD_EXT:
-            raise ImportError("Please install pyemd Python package to compute WMD.")
+
+        # If pyemd C extension is available, import it.
+        # If pyemd is attempted to be used, but isn't installed, ImportError will be raised in wmdistance
+        from pyemd import emd
 
         # Remove out-of-vocabulary words.
         len_pre_oov1 = len(document1)
@@ -765,9 +726,9 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         if diff1 > 0 or diff2 > 0:
             logger.info('Removed %d and %d OOV words from document 1 and 2 (respectively).', diff1, diff2)
 
-        if len(document1) == 0 or len(document2) == 0:
+        if not document1 or not document2:
             logger.info(
-                "At least one of the documents had no words that werein the vocabulary. "
+                "At least one of the documents had no words that were in the vocabulary. "
                 "Aborting (returning inf)."
             )
             return float('inf')
@@ -786,11 +747,15 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         # Compute distance matrix.
         distance_matrix = zeros((vocab_len, vocab_len), dtype=double)
         for i, t1 in dictionary.items():
+            if t1 not in docset1:
+                continue
+
             for j, t2 in dictionary.items():
-                if t1 not in docset1 or t2 not in docset2:
+                if t2 not in docset2 or distance_matrix[i, j] != 0.0:
                     continue
+
                 # Compute Euclidean distance between word vectors.
-                distance_matrix[i, j] = sqrt(np_sum((self[t1] - self[t2])**2))
+                distance_matrix[i, j] = distance_matrix[j, i] = sqrt(np_sum((self[t1] - self[t2])**2))
 
         if np_sum(distance_matrix) == 0.0:
             # `emd` gets stuck if the distance matrix contains only zeros.
@@ -831,15 +796,21 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
             List of words that contribute positively.
         negative : list of str, optional
             List of words that contribute negatively.
-        topn : int, optional
-            Number of top-N similar words to return.
+        topn : int or None, optional
+            Number of top-N similar words to return, when `topn` is int. When `topn` is None,
+            then similarities for all words are returned.
 
         Returns
         -------
-        list of (str, float)
-            Sequence of (word, similarity).
+        list of (str, float) or numpy.array
+            When `topn` is int, a sequence of (word, similarity) is returned.
+            When `topn` is None, then similarities for all words are returned as a
+            one-dimensional numpy array with the size of the vocabulary.
 
         """
+        if isinstance(topn, Integral) and topn < 1:
+            return []
+
         if positive is None:
             positive = []
         if negative is None:
@@ -1092,52 +1063,53 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         logger.info("Evaluating word analogies for top %i words in the model on %s", restrict_vocab, analogies)
         sections, section = [], None
         quadruplets_no = 0
-        for line_no, line in enumerate(utils.smart_open(analogies)):
-            line = utils.to_unicode(line)
-            if line.startswith(': '):
-                # a new section starts => store the old section
-                if section:
-                    sections.append(section)
-                    self._log_evaluate_word_analogies(section)
-                section = {'section': line.lstrip(': ').strip(), 'correct': [], 'incorrect': []}
-            else:
-                if not section:
-                    raise ValueError("Missing section header before line #%i in %s" % (line_no, analogies))
-                try:
-                    if case_insensitive:
-                        a, b, c, expected = [word.upper() for word in line.split()]
-                    else:
-                        a, b, c, expected = [word for word in line.split()]
-                except ValueError:
-                    logger.info("Skipping invalid line #%i in %s", line_no, analogies)
-                    continue
-                quadruplets_no += 1
-                if a not in ok_vocab or b not in ok_vocab or c not in ok_vocab or expected not in ok_vocab:
-                    oov += 1
-                    if dummy4unknown:
-                        logger.debug('Zero accuracy for line #%d with OOV words: %s', line_no, line.strip())
-                        section['incorrect'].append((a, b, c, expected))
-                    else:
-                        logger.debug("Skipping line #%i with OOV words: %s", line_no, line.strip())
-                    continue
-                original_vocab = self.vocab
-                self.vocab = ok_vocab
-                ignore = {a, b, c}  # input words to be ignored
-                predicted = None
-                # find the most likely prediction using 3CosAdd (vector offset) method
-                # TODO: implement 3CosMul and set-based methods for solving analogies
-                sims = self.most_similar(positive=[b, c], negative=[a], topn=5, restrict_vocab=restrict_vocab)
-                self.vocab = original_vocab
-                for element in sims:
-                    predicted = element[0].upper() if case_insensitive else element[0]
-                    if predicted in ok_vocab and predicted not in ignore:
-                        if predicted != expected:
-                            logger.debug("%s: expected %s, predicted %s", line.strip(), expected, predicted)
-                        break
-                if predicted == expected:
-                    section['correct'].append((a, b, c, expected))
+        with utils.open(analogies, 'rb') as fin:
+            for line_no, line in enumerate(fin):
+                line = utils.to_unicode(line)
+                if line.startswith(': '):
+                    # a new section starts => store the old section
+                    if section:
+                        sections.append(section)
+                        self._log_evaluate_word_analogies(section)
+                    section = {'section': line.lstrip(': ').strip(), 'correct': [], 'incorrect': []}
                 else:
-                    section['incorrect'].append((a, b, c, expected))
+                    if not section:
+                        raise ValueError("Missing section header before line #%i in %s" % (line_no, analogies))
+                    try:
+                        if case_insensitive:
+                            a, b, c, expected = [word.upper() for word in line.split()]
+                        else:
+                            a, b, c, expected = [word for word in line.split()]
+                    except ValueError:
+                        logger.info("Skipping invalid line #%i in %s", line_no, analogies)
+                        continue
+                    quadruplets_no += 1
+                    if a not in ok_vocab or b not in ok_vocab or c not in ok_vocab or expected not in ok_vocab:
+                        oov += 1
+                        if dummy4unknown:
+                            logger.debug('Zero accuracy for line #%d with OOV words: %s', line_no, line.strip())
+                            section['incorrect'].append((a, b, c, expected))
+                        else:
+                            logger.debug("Skipping line #%i with OOV words: %s", line_no, line.strip())
+                        continue
+                    original_vocab = self.vocab
+                    self.vocab = ok_vocab
+                    ignore = {a, b, c}  # input words to be ignored
+                    predicted = None
+                    # find the most likely prediction using 3CosAdd (vector offset) method
+                    # TODO: implement 3CosMul and set-based methods for solving analogies
+                    sims = self.most_similar(positive=[b, c], negative=[a], topn=5, restrict_vocab=restrict_vocab)
+                    self.vocab = original_vocab
+                    for element in sims:
+                        predicted = element[0].upper() if case_insensitive else element[0]
+                        if predicted in ok_vocab and predicted not in ignore:
+                            if predicted != expected:
+                                logger.debug("%s: expected %s, predicted %s", line.strip(), expected, predicted)
+                            break
+                    if predicted == expected:
+                        section['correct'].append((a, b, c, expected))
+                    else:
+                        section['incorrect'].append((a, b, c, expected))
         if section:
             # store the last section, too
             sections.append(section)
@@ -1204,46 +1176,47 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         ok_vocab = {w.upper(): v for w, v in reversed(ok_vocab)} if case_insensitive else dict(ok_vocab)
 
         sections, section = [], None
-        for line_no, line in enumerate(utils.smart_open(questions)):
-            # TODO: use level3 BLAS (=evaluate multiple questions at once), for speed
-            line = utils.to_unicode(line)
-            if line.startswith(': '):
-                # a new section starts => store the old section
-                if section:
-                    sections.append(section)
-                    self.log_accuracy(section)
-                section = {'section': line.lstrip(': ').strip(), 'correct': [], 'incorrect': []}
-            else:
-                if not section:
-                    raise ValueError("Missing section header before line #%i in %s" % (line_no, questions))
-                try:
-                    if case_insensitive:
-                        a, b, c, expected = [word.upper() for word in line.split()]
-                    else:
-                        a, b, c, expected = [word for word in line.split()]
-                except ValueError:
-                    logger.info("Skipping invalid line #%i in %s", line_no, questions)
-                    continue
-                if a not in ok_vocab or b not in ok_vocab or c not in ok_vocab or expected not in ok_vocab:
-                    logger.debug("Skipping line #%i with OOV words: %s", line_no, line.strip())
-                    continue
-                original_vocab = self.vocab
-                self.vocab = ok_vocab
-                ignore = {a, b, c}  # input words to be ignored
-                predicted = None
-                # find the most likely prediction, ignoring OOV words and input words
-                sims = most_similar(self, positive=[b, c], negative=[a], topn=False, restrict_vocab=restrict_vocab)
-                self.vocab = original_vocab
-                for index in matutils.argsort(sims, reverse=True):
-                    predicted = self.index2word[index].upper() if case_insensitive else self.index2word[index]
-                    if predicted in ok_vocab and predicted not in ignore:
-                        if predicted != expected:
-                            logger.debug("%s: expected %s, predicted %s", line.strip(), expected, predicted)
-                        break
-                if predicted == expected:
-                    section['correct'].append((a, b, c, expected))
+        with utils.open(questions, 'rb') as fin:
+            for line_no, line in enumerate(fin):
+                # TODO: use level3 BLAS (=evaluate multiple questions at once), for speed
+                line = utils.to_unicode(line)
+                if line.startswith(': '):
+                    # a new section starts => store the old section
+                    if section:
+                        sections.append(section)
+                        self.log_accuracy(section)
+                    section = {'section': line.lstrip(': ').strip(), 'correct': [], 'incorrect': []}
                 else:
-                    section['incorrect'].append((a, b, c, expected))
+                    if not section:
+                        raise ValueError("Missing section header before line #%i in %s" % (line_no, questions))
+                    try:
+                        if case_insensitive:
+                            a, b, c, expected = [word.upper() for word in line.split()]
+                        else:
+                            a, b, c, expected = [word for word in line.split()]
+                    except ValueError:
+                        logger.info("Skipping invalid line #%i in %s", line_no, questions)
+                        continue
+                    if a not in ok_vocab or b not in ok_vocab or c not in ok_vocab or expected not in ok_vocab:
+                        logger.debug("Skipping line #%i with OOV words: %s", line_no, line.strip())
+                        continue
+                    original_vocab = self.vocab
+                    self.vocab = ok_vocab
+                    ignore = {a, b, c}  # input words to be ignored
+                    predicted = None
+                    # find the most likely prediction, ignoring OOV words and input words
+                    sims = most_similar(self, positive=[b, c], negative=[a], topn=None, restrict_vocab=restrict_vocab)
+                    self.vocab = original_vocab
+                    for index in matutils.argsort(sims, reverse=True):
+                        predicted = self.index2word[index].upper() if case_insensitive else self.index2word[index]
+                        if predicted in ok_vocab and predicted not in ignore:
+                            if predicted != expected:
+                                logger.debug("%s: expected %s, predicted %s", line.strip(), expected, predicted)
+                            break
+                    if predicted == expected:
+                        section['correct'].append((a, b, c, expected))
+                    else:
+                        section['incorrect'].append((a, b, c, expected))
         if section:
             # store the last section, too
             sections.append(section)
@@ -1315,33 +1288,34 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         original_vocab = self.vocab
         self.vocab = ok_vocab
 
-        for line_no, line in enumerate(utils.smart_open(pairs)):
-            line = utils.to_unicode(line)
-            if line.startswith('#'):
-                # May be a comment
-                continue
-            else:
-                try:
-                    if case_insensitive:
-                        a, b, sim = [word.upper() for word in line.split(delimiter)]
-                    else:
-                        a, b, sim = [word for word in line.split(delimiter)]
-                    sim = float(sim)
-                except (ValueError, TypeError):
-                    logger.info('Skipping invalid line #%d in %s', line_no, pairs)
+        with utils.open(pairs, 'rb') as fin:
+            for line_no, line in enumerate(fin):
+                line = utils.to_unicode(line)
+                if line.startswith('#'):
+                    # May be a comment
                     continue
-                if a not in ok_vocab or b not in ok_vocab:
-                    oov += 1
-                    if dummy4unknown:
-                        logger.debug('Zero similarity for line #%d with OOV words: %s', line_no, line.strip())
-                        similarity_model.append(0.0)
-                        similarity_gold.append(sim)
+                else:
+                    try:
+                        if case_insensitive:
+                            a, b, sim = [word.upper() for word in line.split(delimiter)]
+                        else:
+                            a, b, sim = [word for word in line.split(delimiter)]
+                        sim = float(sim)
+                    except (ValueError, TypeError):
+                        logger.info('Skipping invalid line #%d in %s', line_no, pairs)
                         continue
-                    else:
-                        logger.debug('Skipping line #%d with OOV words: %s', line_no, line.strip())
-                        continue
-                similarity_gold.append(sim)  # Similarity from the dataset
-                similarity_model.append(self.similarity(a, b))  # Similarity from the model
+                    if a not in ok_vocab or b not in ok_vocab:
+                        oov += 1
+                        if dummy4unknown:
+                            logger.debug('Zero similarity for line #%d with OOV words: %s', line_no, line.strip())
+                            similarity_model.append(0.0)
+                            similarity_gold.append(sim)
+                            continue
+                        else:
+                            logger.debug('Skipping line #%d with OOV words: %s', line_no, line.strip())
+                            continue
+                    similarity_gold.append(sim)  # Similarity from the dataset
+                    similarity_model.append(self.similarity(a, b))  # Similarity from the model
         self.vocab = original_vocab
         spearman = stats.spearmanr(similarity_gold, similarity_model)
         pearson = stats.pearsonr(similarity_gold, similarity_model)
@@ -1377,12 +1351,130 @@ class WordEmbeddingsKeyedVectors(BaseKeyedVectors):
         """
         if getattr(self, 'vectors_norm', None) is None or replace:
             logger.info("precomputing L2-norms of word weight vectors")
-            if replace:
-                for i in xrange(self.vectors.shape[0]):
-                    self.vectors[i, :] /= sqrt((self.vectors[i, :] ** 2).sum(-1))
-                self.vectors_norm = self.vectors
-            else:
-                self.vectors_norm = (self.vectors / sqrt((self.vectors ** 2).sum(-1))[..., newaxis]).astype(REAL)
+            self.vectors_norm = _l2_norm(self.vectors, replace=replace)
+
+    def relative_cosine_similarity(self, wa, wb, topn=10):
+        """Compute the relative cosine similarity between two words given top-n similar words,
+        by `Artuur Leeuwenberga, Mihaela Velab , Jon Dehdaribc, Josef van Genabithbc "A Minimally Supervised Approach
+        for Synonym Extraction with Word Embeddings" <https://ufal.mff.cuni.cz/pbml/105/art-leeuwenberg-et-al.pdf>`_.
+
+        To calculate relative cosine similarity between two words, equation (1) of the paper is used.
+        For WordNet synonyms, if rcs(topn=10) is greater than 0.10 then wa and wb are more similar than
+        any arbitrary word pairs.
+
+        Parameters
+        ----------
+        wa: str
+            Word for which we have to look top-n similar word.
+        wb: str
+            Word for which we evaluating relative cosine similarity with wa.
+        topn: int, optional
+            Number of top-n similar words to look with respect to wa.
+
+        Returns
+        -------
+        numpy.float64
+            Relative cosine similarity between wa and wb.
+
+        """
+        sims = self.similar_by_word(wa, topn)
+        assert sims, "Failed code invariant: list of similar words must never be empty."
+        rcs = float(self.similarity(wa, wb)) / (sum(sim for _, sim in sims))
+
+        return rcs
+
+    def get_keras_embedding(self, train_embeddings=False, word_index=None):
+        """Get a Keras 'Embedding' layer with weights set as the Word2Vec model's learned word embeddings.
+
+        Parameters
+        ----------
+        train_embeddings : bool
+            If False, the weights are frozen and stopped from being updated.
+            If True, the weights can/will be further trained/updated.
+
+        word_index : {str : int}
+            A mapping from tokens to their indices the way they will be provided in the input to the embedding layer.
+            The embedding of each token will be placed at the corresponding index in the returned matrix.
+            Tokens not in the index are ignored.
+            This is useful when the token indices are produced by a process that is not coupled with the embedding
+            model, e.x. an Keras Tokenizer object.
+            If None, the embedding matrix in the embedding layer will be indexed according to self.vocab
+
+        Returns
+        -------
+        `keras.layers.Embedding`
+            Embedding layer.
+
+        Raises
+        ------
+        ImportError
+            If `Keras <https://pypi.org/project/Keras/>`_ not installed.
+
+        Warnings
+        --------
+        Current method works only if `Keras <https://pypi.org/project/Keras/>`_ installed.
+
+        """
+        try:
+            from keras.layers import Embedding
+        except ImportError:
+            raise ImportError("Please install Keras to use this function")
+        if word_index is None:
+            weights = self.vectors
+        else:
+            max_index = max(word_index.values())
+            weights = np.random.normal(size=(max_index + 1, self.vectors.shape[1]))
+            for word, index in word_index.items():
+                if word in self.vocab:
+                    weights[index] = self.get_vector(word)
+
+        layer = Embedding(
+            input_dim=weights.shape[0], output_dim=weights.shape[1],
+            weights=[weights], trainable=train_embeddings
+        )
+        return layer
+
+
+class WordEmbeddingSimilarityIndex(TermSimilarityIndex):
+    """
+    Computes cosine similarities between word embeddings and retrieves the closest word embeddings
+    by cosine similarity for a given word embedding.
+
+    Parameters
+    ----------
+    keyedvectors : :class:`~gensim.models.keyedvectors.WordEmbeddingsKeyedVectors`
+        The word embeddings.
+    threshold : float, optional
+        Only embeddings more similar than `threshold` are considered when retrieving word embeddings
+        closest to a given word embedding.
+    exponent : float, optional
+        Take the word embedding similarities larger than `threshold` to the power of `exponent`.
+    kwargs : dict or None
+        A dict with keyword arguments that will be passed to the `keyedvectors.most_similar` method
+        when retrieving the word embeddings closest to a given word embedding.
+
+    See Also
+    --------
+    :class:`~gensim.similarities.termsim.SparseTermSimilarityMatrix`
+        Build a term similarity matrix and compute the Soft Cosine Measure.
+
+    """
+    def __init__(self, keyedvectors, threshold=0.0, exponent=2.0, kwargs=None):
+        assert isinstance(keyedvectors, WordEmbeddingsKeyedVectors)
+        self.keyedvectors = keyedvectors
+        self.threshold = threshold
+        self.exponent = exponent
+        self.kwargs = kwargs or {}
+        super(WordEmbeddingSimilarityIndex, self).__init__()
+
+    def most_similar(self, t1, topn=10):
+        if t1 not in self.keyedvectors.vocab:
+            logger.debug('an out-of-dictionary term "%s"', t1)
+        else:
+            most_similar = self.keyedvectors.most_similar(positive=[t1], topn=topn, **self.kwargs)
+            for t2, similarity in most_similar:
+                if similarity > self.threshold:
+                    yield (t2, similarity**self.exponent)
 
 
 class Word2VecKeyedVectors(WordEmbeddingsKeyedVectors):
@@ -1401,7 +1493,7 @@ class Word2VecKeyedVectors(WordEmbeddingsKeyedVectors):
         fvocab : str, optional
             Optional file path used to save the vocabulary
         binary : bool, optional
-            If True, the data wil be saved in binary word2vec format, else it will be saved in plain text.
+            If True, the data will be saved in binary word2vec format, else it will be saved in plain text.
         total_vec : int, optional
             Optional parameter to explicitly specify total no. of vectors
             (in case word vectors are appended with document vectors afterwards).
@@ -1456,43 +1548,14 @@ class Word2VecKeyedVectors(WordEmbeddingsKeyedVectors):
             cls, fname, fvocab=fvocab, binary=binary, encoding=encoding, unicode_errors=unicode_errors,
             limit=limit, datatype=datatype)
 
-    def get_keras_embedding(self, train_embeddings=False):
-        """Get a Keras 'Embedding' layer with weights set as the Word2Vec model's learned word embeddings.
+    @classmethod
+    def load(cls, fname_or_handle, **kwargs):
+        model = super(WordEmbeddingsKeyedVectors, cls).load(fname_or_handle, **kwargs)
+        if isinstance(model, FastTextKeyedVectors):
+            if not hasattr(model, 'compatible_hash'):
+                model.compatible_hash = False
 
-        Parameters
-        ----------
-        train_embeddings : bool
-            If False, the weights are frozen and stopped from being updated.
-            If True, the weights can/will be further trained/updated.
-
-        Returns
-        -------
-        `keras.layers.Embedding`
-            Embedding layer.
-
-        Raises
-        ------
-        ImportError
-            If `Keras <https://pypi.org/project/Keras/>`_ not installed.
-
-        Warnings
-        --------
-        Current method work only if `Keras <https://pypi.org/project/Keras/>`_ installed.
-
-        """
-        try:
-            from keras.layers import Embedding
-        except ImportError:
-            raise ImportError("Please install Keras to use this function")
-        weights = self.vectors
-
-        # set `trainable` as `False` to use the pretrained word embedding
-        # No extra mem usage here as `Embedding` layer doesn't create any new matrix for weights
-        layer = Embedding(
-            input_dim=weights.shape[0], output_dim=weights.shape[1],
-            weights=[weights], trainable=train_embeddings
-        )
-        return layer
+        return model
 
 
 KeyedVectors = Word2VecKeyedVectors  # alias for backward compatibility
@@ -1594,19 +1657,12 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
         """
         if getattr(self, 'vectors_docs_norm', None) is None or replace:
             logger.info("precomputing L2-norms of doc weight vectors")
-            if replace:
-                for i in xrange(self.vectors_docs.shape[0]):
-                    self.vectors_docs[i, :] /= sqrt((self.vectors_docs[i, :] ** 2).sum(-1))
-                self.vectors_docs_norm = self.vectors_docs
+            if not replace and self.mapfile_path:
+                self.vectors_docs_norm = np_memmap(
+                    self.mapfile_path + '.vectors_docs_norm', dtype=REAL,
+                    mode='w+', shape=self.vectors_docs.shape)
             else:
-                if self.mapfile_path:
-                    self.vectors_docs_norm = np_memmap(
-                        self.mapfile_path + '.vectors_docs_norm', dtype=REAL,
-                        mode='w+', shape=self.vectors_docs.shape)
-                else:
-                    self.vectors_docs_norm = empty(self.vectors_docs.shape, dtype=REAL)
-                np_divide(
-                    self.vectors_docs, sqrt((self.vectors_docs ** 2).sum(-1))[..., newaxis], self.vectors_docs_norm)
+                self.vectors_docs_norm = _l2_norm(self.vectors_docs, replace=replace)
 
     def most_similar(self, positive=None, negative=None, topn=10, clip_start=0, clip_end=None, indexer=None):
         """Find the top-N most similar docvecs from the training set.
@@ -1625,8 +1681,9 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
             List of doctags/indexes that contribute positively.
         negative : list of {str, int}, optional
             List of doctags/indexes that contribute negatively.
-        topn : int, optional
-            Number of top-N similar docvecs to return.
+        topn : int or None, optional
+            Number of top-N similar docvecs to return, when `topn` is int. When `topn` is None,
+            then similarities for all docvecs are returned.
         clip_start : int
             Start clipping index.
         clip_end : int
@@ -1638,6 +1695,9 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
             Sequence of (doctag/index, similarity).
 
         """
+        if isinstance(topn, Integral) and topn < 1:
+            return []
+
         if positive is None:
             positive = []
         if negative is None:
@@ -1674,7 +1734,7 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
             raise ValueError("cannot compute similarity with no input")
         mean = matutils.unitvec(array(mean).mean(axis=0)).astype(REAL)
 
-        if indexer is not None:
+        if indexer is not None and isinstance(topn, int):
             return indexer.most_similar(mean, topn)
 
         dists = dot(self.vectors_docs_norm[clip_start:clip_end], mean)
@@ -1793,7 +1853,7 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
             other_vectors = self[other_docs]
         return 1 - WordEmbeddingsKeyedVectors.cosine_similarities(input_vector, other_vectors)
 
-    def similarity_unseen_docs(self, model, doc_words1, doc_words2, alpha=0.1, min_alpha=0.0001, steps=5):
+    def similarity_unseen_docs(self, model, doc_words1, doc_words2, alpha=None, min_alpha=None, steps=None):
         """Compute cosine similarity between two post-bulk out of training documents.
 
         Parameters
@@ -1839,13 +1899,13 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
             Explicitly specify total no. of vectors
             (in case word vectors are appended with document vectors afterwards)
         binary : bool, optional
-            If True, the data wil be saved in binary word2vec format, else it will be saved in plain text.
+            If True, the data will be saved in binary word2vec format, else it will be saved in plain text.
         write_first_line : bool, optional
             Whether to print the first line in the file. Useful when saving doc-vectors after word-vectors.
 
         """
         total_vec = total_vec or len(self)
-        with utils.smart_open(fname, 'ab') as fout:
+        with utils.open(fname, 'ab') as fout:
             if write_first_line:
                 logger.info("storing %sx%s projection weights into %s", total_vec, self.vectors_docs.shape[1], fname)
                 fout.write(utils.to_utf8("%s %s\n" % (total_vec, self.vectors_docs.shape[1])))
@@ -1894,36 +1954,92 @@ class Doc2VecKeyedVectors(BaseKeyedVectors):
 
 
 class FastTextKeyedVectors(WordEmbeddingsKeyedVectors):
-    """Vectors and vocab for :class:`~gensim.models.fasttext.FastText`."""
-    def __init__(self, vector_size, min_n, max_n):
+    """Vectors and vocab for :class:`~gensim.models.fasttext.FastText`.
+
+    Implements significant parts of the FastText algorithm.  For example,
+    the :func:`word_vec` calculates vectors for out-of-vocabulary (OOV)
+    entities.  FastText achieves this by keeping vectors for ngrams:
+    adding the vectors for the ngrams of an entity yields the vector for the
+    entity.
+
+    Similar to a hashmap, this class keeps a fixed number of buckets, and
+    maps all ngrams to buckets using a hash function.
+
+    This class also provides an abstraction over the hash functions used by
+    Gensim's FastText implementation over time.  The hash function connects
+    ngrams to buckets.  Originally, the hash function was broken and
+    incompatible with Facebook's implementation.  The current hash is fully
+    compatible.
+
+    Parameters
+    ----------
+    vector_size : int
+        The dimensionality of all vectors.
+    min_n : int
+        The minimum number of characters in an ngram
+    max_n : int
+        The maximum number of characters in an ngram
+    bucket : int
+        The number of buckets.
+    compatible_hash : boolean
+        If True, uses the Facebook-compatible hash function instead of the
+        Gensim backwards-compatible hash function.
+
+    Attributes
+    ----------
+    vectors_vocab : np.array
+        Each row corresponds to a vector for an entity in the vocabulary.
+        Columns correspond to vector dimensions.
+    vectors_vocab_norm : np.array
+        Same as vectors_vocab, but the vectors are L2 normalized.
+    vectors_ngrams : np.array
+        A vector for each ngram across all entities in the vocabulary.
+        Each row is a vector that corresponds to a bucket.
+        Columns correspond to vector dimensions.
+    vectors_ngrams_norm : np.array
+        Same as vectors_ngrams, but the vectors are L2 normalized.
+        Under some conditions, may actually be the same matrix as
+        vectors_ngrams, e.g. if :func:`init_sims` was called with
+        replace=True.
+    buckets_word : dict
+        Maps vocabulary items (by their index) to the buckets they occur in.
+
+    """
+    def __init__(self, vector_size, min_n, max_n, bucket, compatible_hash):
         super(FastTextKeyedVectors, self).__init__(vector_size=vector_size)
         self.vectors_vocab = None
         self.vectors_vocab_norm = None
         self.vectors_ngrams = None
         self.vectors_ngrams_norm = None
         self.buckets_word = None
-        self.hash2index = {}
         self.min_n = min_n
         self.max_n = max_n
-        self.num_ngram_vectors = 0
+        self.bucket = bucket
+        self.compatible_hash = compatible_hash
+
+    @classmethod
+    def load(cls, fname_or_handle, **kwargs):
+        model = super(WordEmbeddingsKeyedVectors, cls).load(fname_or_handle, **kwargs)
+        _try_upgrade(model)
+        return model
 
     @property
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors_vocab instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors_vocab instead")
     def syn0_vocab(self):
         return self.vectors_vocab
 
     @property
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors_vocab_norm instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors_vocab_norm instead")
     def syn0_vocab_norm(self):
         return self.vectors_vocab_norm
 
     @property
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors_ngrams instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors_ngrams instead")
     def syn0_ngrams(self):
         return self.vectors_ngrams
 
     @property
-    @deprecated("Attribute will be removed in 4.0.0, use self.wv.vectors_ngrams_norm instead")
+    @deprecated("Attribute will be removed in 4.0.0, use self.vectors_ngrams_norm instead")
     def syn0_ngrams_norm(self):
         return self.vectors_ngrams_norm
 
@@ -1941,12 +2057,23 @@ class FastTextKeyedVectors(WordEmbeddingsKeyedVectors):
         bool
             True if `word` or any character ngrams in `word` are present in the vocabulary, False otherwise.
 
+        Note
+        ----
+        This method **always** returns True, because of the way FastText works.
+
+        If you want to check if a word is an in-vocabulary term, use this instead:
+
+        .. pycon:
+
+            >>> from gensim.test.utils import datapath
+            >>> from gensim.models import FastText
+            >>> cap_path = datapath("crime-and-punishment.bin")
+            >>> model = FastText.load_fasttext_format(cap_path, full_model=False)
+            >>> 'steamtrain' in model.wv.vocab  # If False, is an OOV term
+            False
+
         """
-        if word in self.vocab:
-            return True
-        else:
-            char_ngrams = _compute_ngrams(word, self.min_n, self.max_n)
-            return any(_ft_hash(ng) % self.bucket in self.hash2index for ng in char_ngrams)
+        return True
 
     def save(self, *args, **kwargs):
         """Save object.
@@ -1963,8 +2090,14 @@ class FastTextKeyedVectors(WordEmbeddingsKeyedVectors):
 
         """
         # don't bother storing the cached normalized vectors
-        kwargs['ignore'] = kwargs.get(
-            'ignore', ['vectors_norm', 'vectors_vocab_norm', 'vectors_ngrams_norm', 'buckets_word'])
+        ignore_attrs = [
+            'vectors_norm',
+            'vectors_vocab_norm',
+            'vectors_ngrams_norm',
+            'buckets_word',
+            'hash2index',
+        ]
+        kwargs['ignore'] = kwargs.get('ignore', ignore_attrs)
         super(FastTextKeyedVectors, self).save(*args, **kwargs)
 
     def word_vec(self, word, use_norm=False):
@@ -1990,24 +2123,28 @@ class FastTextKeyedVectors(WordEmbeddingsKeyedVectors):
         """
         if word in self.vocab:
             return super(FastTextKeyedVectors, self).word_vec(word, use_norm)
+        elif self.bucket == 0:
+            raise KeyError('cannot calculate vector for OOV word without ngrams')
         else:
-            # from gensim.models.fasttext import compute_ngrams
-            word_vec = np.zeros(self.vectors_ngrams.shape[1], dtype=np.float32)
-            ngrams = _compute_ngrams(word, self.min_n, self.max_n)
+            word_vec = np.zeros(self.vectors_ngrams.shape[1], dtype=REAL)
+            ngram_hashes = ft_ngram_hashes(word, self.min_n, self.max_n, self.bucket, self.compatible_hash)
+            if len(ngram_hashes) == 0:
+                #
+                # If it is impossible to extract _any_ ngrams from the input
+                # word, then the best we can do is return a vector that points
+                # to the origin.  The reference FB implementation does this,
+                # too.
+                #
+                # https://github.com/RaRe-Technologies/gensim/issues/2402
+                #
+                logger.warning('could not extract any ngrams from %r, returning origin vector', word)
+                return word_vec
+            for nh in ngram_hashes:
+                word_vec += self.vectors_ngrams[nh]
+            result = word_vec / len(ngram_hashes)
             if use_norm:
-                ngram_weights = self.vectors_ngrams_norm
-            else:
-                ngram_weights = self.vectors_ngrams
-            ngrams_found = 0
-            for ngram in ngrams:
-                ngram_hash = _ft_hash(ngram) % self.bucket
-                if ngram_hash in self.hash2index:
-                    word_vec += ngram_weights[self.hash2index[ngram_hash]]
-                    ngrams_found += 1
-            if word_vec.any():
-                return word_vec / max(1, ngrams_found)
-            else:  # No ngrams of the word are present in self.ngrams
-                raise KeyError('all ngrams for word %s absent from model' % word)
+                result /= sqrt(sum(result ** 2))
+            return result
 
     def init_sims(self, replace=False):
         """Precompute L2-normalized vectors.
@@ -2028,13 +2165,7 @@ class FastTextKeyedVectors(WordEmbeddingsKeyedVectors):
         super(FastTextKeyedVectors, self).init_sims(replace)
         if getattr(self, 'vectors_ngrams_norm', None) is None or replace:
             logger.info("precomputing L2-norms of ngram weight vectors")
-            if replace:
-                for i in range(self.vectors_ngrams.shape[0]):
-                    self.vectors_ngrams[i, :] /= sqrt((self.vectors_ngrams[i, :] ** 2).sum(-1))
-                self.vectors_ngrams_norm = self.vectors_ngrams
-            else:
-                self.vectors_ngrams_norm = \
-                    (self.vectors_ngrams / sqrt((self.vectors_ngrams ** 2).sum(-1))[..., newaxis]).astype(REAL)
+            self.vectors_ngrams_norm = _l2_norm(self.vectors_ngrams, replace=replace)
 
     def save_word2vec_format(self, fname, fvocab=None, binary=False, total_vec=None):
         """Store the input-hidden weight matrix in the same format used by the original
@@ -2056,3 +2187,340 @@ class FastTextKeyedVectors(WordEmbeddingsKeyedVectors):
         # from gensim.models.word2vec import save_word2vec_format
         _save_word2vec_format(
             fname, self.vocab, self.vectors, fvocab=fvocab, binary=binary, total_vec=total_vec)
+
+    def init_ngrams_weights(self, seed):
+        """Initialize the vocabulary and ngrams weights prior to training.
+
+        Creates the weight matrices and initializes them with uniform random values.
+
+        Parameters
+        ----------
+        seed : float
+            The seed for the PRNG.
+
+        Note
+        ----
+        Call this **after** the vocabulary has been fully initialized.
+
+        """
+        self.buckets_word = _process_fasttext_vocab(
+            self.vocab.items(),
+            self.min_n,
+            self.max_n,
+            self.bucket,
+            self.compatible_hash,
+        )
+
+        rand_obj = np.random
+        rand_obj.seed(seed)
+
+        lo, hi = -1.0 / self.vector_size, 1.0 / self.vector_size
+        vocab_shape = (len(self.vocab), self.vector_size)
+        ngrams_shape = (self.bucket, self.vector_size)
+        self.vectors_vocab = rand_obj.uniform(lo, hi, vocab_shape).astype(REAL)
+
+        #
+        # We could have initialized vectors_ngrams at construction time, but we
+        # do it here for two reasons:
+        #
+        # 1. The constructor does not have access to the random seed
+        # 2. We want to use the same rand_obj to fill vectors_vocab _and_
+        #    vectors_ngrams, and vectors_vocab cannot happen at construction
+        #    time because the vocab is not initialized at that stage.
+        #
+        self.vectors_ngrams = rand_obj.uniform(lo, hi, ngrams_shape).astype(REAL)
+
+    def update_ngrams_weights(self, seed, old_vocab_len):
+        """Update the vocabulary weights for training continuation.
+
+        Parameters
+        ----------
+        seed : float
+            The seed for the PRNG.
+        old_vocab_length : int
+            The length of the vocabulary prior to its update.
+
+        Note
+        ----
+        Call this **after** the vocabulary has been updated.
+
+        """
+        self.buckets_word = _process_fasttext_vocab(
+            self.vocab.items(),
+            self.min_n,
+            self.max_n,
+            self.bucket,
+            self.compatible_hash,
+        )
+
+        rand_obj = np.random
+        rand_obj.seed(seed)
+
+        new_vocab = len(self.vocab) - old_vocab_len
+        self.vectors_vocab = _pad_random(self.vectors_vocab, new_vocab, rand_obj)
+
+    def init_post_load(self, vectors):
+        """Perform initialization after loading a native Facebook model.
+
+        Expects that the vocabulary (self.vocab) has already been initialized.
+
+        Parameters
+        ----------
+        vectors : np.array
+            A matrix containing vectors for all the entities, including words
+            and ngrams.  This comes directly from the binary model.
+            The order of the vectors must correspond to the indices in
+            the vocabulary.
+        match_gensim : boolean, optional
+            No longer supported.
+
+        """
+        vocab_words = len(self.vocab)
+        assert vectors.shape[0] == vocab_words + self.bucket, 'unexpected number of vectors'
+        assert vectors.shape[1] == self.vector_size, 'unexpected vector dimensionality'
+
+        #
+        # The incoming vectors contain vectors for both words AND
+        # ngrams.  We split them into two separate matrices, because our
+        # implementation treats them differently.
+        #
+        self.vectors = np.array(vectors[:vocab_words, :])
+        self.vectors_vocab = np.array(vectors[:vocab_words, :])
+        self.vectors_ngrams = np.array(vectors[vocab_words:, :])
+        self.buckets_word = None  # This can get initialized later
+
+        self.adjust_vectors()
+
+    def adjust_vectors(self):
+        """Adjust the vectors for words in the vocabulary.
+
+        The adjustment relies on the vectors of the ngrams making up each
+        individual word.
+
+        """
+        if self.bucket == 0:
+            return
+
+        for w, v in self.vocab.items():
+            word_vec = np.copy(self.vectors_vocab[v.index])
+            ngram_hashes = ft_ngram_hashes(w, self.min_n, self.max_n, self.bucket, self.compatible_hash)
+            for nh in ngram_hashes:
+                word_vec += self.vectors_ngrams[nh]
+            word_vec /= len(ngram_hashes) + 1
+            self.vectors[v.index] = word_vec
+
+    @property
+    @deprecated("Attribute will be removed in 4.0.0, use self.bucket instead")
+    def num_ngram_vectors(self):
+        return self.bucket
+
+
+def _process_fasttext_vocab(iterable, min_n, max_n, num_buckets, compatible_hash):
+    """
+    Performs a common operation for FastText weight initialization and
+    updates: scan the vocabulary, calculate ngrams and their hashes, keep
+    track of new ngrams, the buckets that each word relates to via its
+    ngrams, etc.
+
+    Parameters
+    ----------
+    iterable : list
+        A list of (word, :class:`Vocab`) tuples.
+    min_n : int
+        The minimum length of ngrams.
+    max_n : int
+        The maximum length of ngrams.
+    num_buckets : int
+        The number of buckets used by the model.
+    compatible_hash : boolean
+        True for compatibility with the Facebook implementation.
+        False for compatibility with the old Gensim implementation.
+
+    Returns
+    -------
+    dict
+        Keys are indices of entities in the vocabulary (words).  Values are
+        arrays containing indices into vectors_ngrams for each ngram of the
+        word.
+
+    """
+    word_indices = {}
+
+    if num_buckets == 0:
+        return {v.index: np.array([], dtype=np.uint32) for w, v in iterable}
+
+    for word, vocab in iterable:
+        wi = []
+        for ngram_hash in ft_ngram_hashes(word, min_n, max_n, num_buckets, compatible_hash):
+            wi.append(ngram_hash)
+        word_indices[vocab.index] = np.array(wi, dtype=np.uint32)
+
+    return word_indices
+
+
+def _pad_random(m, new_rows, rand):
+    """Pad a matrix with additional rows filled with random values."""
+    rows, columns = m.shape
+    low, high = -1.0 / columns, 1.0 / columns
+    suffix = rand.uniform(low, high, (new_rows, columns)).astype(REAL)
+    return vstack([m, suffix])
+
+
+def _l2_norm(m, replace=False):
+    """Return an L2-normalized version of a matrix.
+
+    Parameters
+    ----------
+    m : np.array
+        The matrix to normalize.
+    replace : boolean, optional
+        If True, modifies the existing matrix.
+
+    Returns
+    -------
+    The normalized matrix.  If replace=True, this will be the same as m.
+
+    """
+    dist = sqrt((m ** 2).sum(-1))[..., newaxis]
+    if replace:
+        m /= dist
+        return m
+    else:
+        return (m / dist).astype(REAL)
+
+
+def _rollback_optimization(kv):
+    """Undo the optimization that pruned buckets.
+
+    This unfortunate optimization saves memory and CPU cycles, but breaks
+    compatibility with Facebook's model by introducing divergent behavior
+    for OOV words.
+
+    """
+    logger.warning(
+        "This saved FastText model was trained with an optimization we no longer support. "
+        "The current Gensim version automatically reverses this optimization during loading. "
+        "Save the loaded model to a new file and reload to suppress this message."
+    )
+    assert hasattr(kv, 'hash2index')
+    assert hasattr(kv, 'num_ngram_vectors')
+
+    kv.vectors_ngrams = _unpack(kv.vectors_ngrams, kv.bucket, kv.hash2index)
+
+    #
+    # We have replaced num_ngram_vectors with a property and deprecated it.
+    # We can't delete it because the new attribute masks the member.
+    #
+    del kv.hash2index
+
+
+def _unpack_copy(m, num_rows, hash2index, seed=1):
+    """Same as _unpack, but makes a copy of the matrix.
+
+    Simpler implementation, but uses more RAM.
+
+    """
+    rows, columns = m.shape
+    if rows == num_rows:
+        #
+        # Nothing to do.
+        #
+        return m
+    assert num_rows > rows
+
+    rand_obj = np.random
+    rand_obj.seed(seed)
+
+    n = np.empty((0, columns), dtype=m.dtype)
+    n = _pad_random(n, num_rows, rand_obj)
+
+    for src, dst in hash2index.items():
+        n[src] = m[dst]
+
+    return n
+
+
+def _unpack(m, num_rows, hash2index, seed=1):
+    """Restore the array to its natural shape, undoing the optimization.
+
+    A packed matrix contains contiguous vectors for ngrams, as well as a hashmap.
+    The hash map maps the ngram hash to its index in the packed matrix.
+    To unpack the matrix, we need to do several things:
+
+    1. Restore the matrix to its "natural" shape, where the number of rows
+       equals the number of buckets.
+    2. Rearrange the existing rows such that the hashmap becomes the identity
+       function and is thus redundant.
+    3. Fill the new rows with random values.
+
+    Parameters
+    ----------
+
+    m : np.ndarray
+        The matrix to restore.
+    num_rows : int
+        The number of rows that this array should have.
+    hash2index : dict
+        the product of the optimization we are undoing.
+    seed : float, optional
+        The seed for the PRNG.  Will be used to initialize new rows.
+
+    Returns
+    -------
+    np.array
+        The unpacked matrix.
+
+    Notes
+    -----
+
+    The unpacked matrix will reference some rows in the input matrix to save memory.
+    Throw away the old matrix after calling this function, or use np.copy.
+
+    """
+    orig_rows, orig_columns = m.shape
+    if orig_rows == num_rows:
+        #
+        # Nothing to do.
+        #
+        return m
+    assert num_rows > orig_rows
+
+    rand_obj = np.random
+    rand_obj.seed(seed)
+
+    #
+    # Rows at the top of the matrix (the first orig_rows) will contain "packed" learned vectors.
+    # Rows at the bottom of the matrix will be "free": initialized to random values.
+    #
+    m = _pad_random(m, num_rows - orig_rows, rand_obj)
+
+    #
+    # Swap rows to transform hash2index into the identify function.
+    # There are two kinds of swaps.
+    # First, rearrange the rows that belong entirely within the original matrix dimensions.
+    # Second, swap out rows from the original matrix dimensions, replacing them with
+    # randomly initialized values.
+    #
+    # N.B. We only do the swap in one direction, because doing it in both directions
+    # nullifies the effect.
+    #
+    swap = {h: i for (h, i) in hash2index.items() if h < i < orig_rows}
+    swap.update({h: i for (h, i) in hash2index.items() if h >= orig_rows})
+    for h, i in swap.items():
+        assert h != i
+        m[[h, i]] = m[[i, h]]  # swap rows i and h
+
+    return m
+
+
+def _try_upgrade(wv):
+    if hasattr(wv, 'hash2index'):
+        _rollback_optimization(wv)
+
+    if not hasattr(wv, 'compatible_hash'):
+        logger.warning(
+            "This older model was trained with a buggy hash function. "
+            "The model will continue to work, but consider training it "
+            "from scratch."
+        )
+        wv.compatible_hash = False

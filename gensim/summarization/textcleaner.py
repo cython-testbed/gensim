@@ -22,21 +22,16 @@ Data
 
 from gensim.summarization.syntactic_unit import SyntacticUnit
 from gensim.parsing.preprocessing import preprocess_documents
-from gensim.utils import tokenize
-from six.moves import xrange
+from gensim.utils import tokenize, has_pattern
+from six.moves import range
 import re
 import logging
 
 logger = logging.getLogger(__name__)
 
-try:
+HAS_PATTERN = has_pattern()
+if HAS_PATTERN:
     from pattern.en import tag
-    logger.info("'pattern' package found; tag filters are available for English")
-    HAS_PATTERN = True
-except ImportError:
-    logger.info("'pattern' package not found; tag filters are not available for English")
-    HAS_PATTERN = False
-
 
 SEPARATOR = r'@'
 RE_SENTENCE = re.compile(r'(\S.+?[.!?])(?=\s+|$)|(\S.+?)(?=[\n]|$)', re.UNICODE)
@@ -63,7 +58,6 @@ def split_sentences(text):
 
     Example
     -------
-
     .. sourcecode:: pycon
 
         >>> from gensim.summarization.textcleaner import split_sentences
@@ -94,7 +88,6 @@ def replace_abbreviations(text):
 
     Example
     -------
-
     .. sourcecode:: pycon
 
         >>> replace_abbreviations("God bless you, please, Mrs. Robinson")
@@ -167,7 +160,6 @@ def get_sentences(text):
 
     Example
     -------
-
     .. sourcecode:: pycon
 
         >>> text = "Does this text contains two sentences? Yes, it does."
@@ -201,15 +193,14 @@ def merge_syntactic_units(original_units, filtered_units, tags=None):
 
     """
     units = []
-    for i in xrange(len(original_units)):
+    for i in range(len(original_units)):
         if filtered_units[i] == '':
             continue
 
         text = original_units[i]
         token = filtered_units[i]
         tag = tags[i][1] if tags else None
-        sentence = SyntacticUnit(text, token, tag)
-        sentence.index = i
+        sentence = SyntacticUnit(text, token, tag, i)
 
         units.append(sentence)
 

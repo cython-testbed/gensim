@@ -5,7 +5,7 @@
 # Copyright (C) 2018 RaRe Technologies s.r.o.
 # Licensed under the GNU LGPL v2.1 - http://www.gnu.org/licenses/lgpl.html
 
-"""This module contains base classes required for implementing \*2vec algorithms.
+r"""This module contains base classes required for implementing \*2vec algorithms.
 
 The class hierarchy is designed to facilitate adding more concrete implementations for creating embeddings.
 In the most general case, the purpose of this class is to transform an arbitrary representation to a numerical vector
@@ -36,13 +36,12 @@ from gensim import utils
 import logging
 from timeit import default_timer
 import threading
-from six.moves import xrange
+from six.moves import range
 from six import itervalues, string_types
 from gensim import matutils
-from numpy import float32 as REAL, ones, random, dtype, zeros
+from numpy import float32 as REAL, ones, random, dtype
 from types import GeneratorType
 from gensim.utils import deprecated
-import warnings
 import os
 import copy
 
@@ -56,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 class BaseAny2VecModel(utils.SaveLoad):
-    """Base class for training, using and evaluating \*2vec model.
+    r"""Base class for training, using and evaluating \*2vec model.
 
     Contains implementation for multi-threaded training. The purpose of this class is to provide a
     reference interface for concrete embedding implementations, whether the input space is a corpus
@@ -284,7 +283,7 @@ class BaseAny2VecModel(utils.SaveLoad):
             )
 
         # give the workers heads up that they can finish -- no more work!
-        for _ in xrange(self.workers):
+        for _ in range(self.workers):
             job_queue.put(None)
         logger.debug("job loop exiting, total %i jobs", job_no)
 
@@ -472,7 +471,7 @@ class BaseAny2VecModel(utils.SaveLoad):
             threading.Thread(
                 target=self._worker_loop,
                 args=(job_queue, progress_queue,))
-            for _ in xrange(self.workers)
+            for _ in range(self.workers)
         ]
 
         workers.append(threading.Thread(
@@ -647,7 +646,7 @@ class BaseWordEmbeddingsModel(BaseAny2VecModel):
 
     def __init__(self, sentences=None, corpus_file=None, workers=3, vector_size=100, epochs=5, callbacks=(),
                  batch_words=10000, trim_rule=None, sg=0, alpha=0.025, window=5, seed=1, hs=0, negative=5,
-                 ns_exponent=0.75, cbow_mean=1, min_alpha=0.0001, compute_loss=False, fast_version=0, **kwargs):
+                 ns_exponent=0.75, cbow_mean=1, min_alpha=0.0001, compute_loss=False, **kwargs):
         """
 
         Parameters
@@ -660,7 +659,7 @@ class BaseWordEmbeddingsModel(BaseAny2VecModel):
         corpus_file : str, optional
             Path to a corpus file in :class:`~gensim.models.word2vec.LineSentence` format.
             You may use this argument instead of `sentences` to get performance boost. Only one of `sentences` or
-            `corpus_file` arguments need to be passed (or none of them).
+            `corpus_file` arguments need to be passed (or none of them, in that case, the model is left uninitialized).
         workers : int, optional
             Number of working threads, used for multiprocessing.
         vector_size : int, optional
@@ -712,8 +711,6 @@ class BaseWordEmbeddingsModel(BaseAny2VecModel):
         compute_loss : bool, optional
             If True, loss will be computed while training the Word2Vec model and stored in
             :attr:`~gensim.models.base_any2vec.BaseWordEmbeddingsModel.running_training_loss` attribute.
-        fast_version : {-1, 1}, optional
-            Whether or not the fast cython implementation of the internal training methods is available. 1 means it is.
         **kwargs : object
             Key word arguments needed to allow children classes to accept more arguments.
 
@@ -738,23 +735,12 @@ class BaseWordEmbeddingsModel(BaseAny2VecModel):
         super(BaseWordEmbeddingsModel, self).__init__(
             workers=workers, vector_size=vector_size, epochs=epochs, callbacks=callbacks, batch_words=batch_words)
 
-        if fast_version < 0:
-            warnings.warn(
-                "C extension not loaded, training will be slow. "
-                "Install a C compiler and reinstall gensim for fast training."
-            )
-            self.neg_labels = []
-            if self.negative > 0:
-                # precompute negative labels optimization for pure-python training
-                self.neg_labels = zeros(self.negative + 1)
-                self.neg_labels[0] = 1.
-
         if sentences is not None or corpus_file is not None:
             self._check_input_data_sanity(data_iterable=sentences, corpus_file=corpus_file)
             if corpus_file is not None and not isinstance(corpus_file, string_types):
                 raise TypeError("You must pass string as the corpus_file argument.")
             elif isinstance(sentences, GeneratorType):
-                raise TypeError("You can't pass a generator as the sentences argument. Try an iterator.")
+                raise TypeError("You can't pass a generator as the sentences argument. Try a sequence.")
 
             self.build_vocab(sentences=sentences, corpus_file=corpus_file, trim_rule=trim_rule)
             self.train(

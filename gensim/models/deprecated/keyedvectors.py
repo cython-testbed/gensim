@@ -86,7 +86,7 @@ except ImportError:
 try:
     from pyemd import emd
     PYEMD_EXT = True
-except ImportError:
+except (ImportError, ValueError):
     PYEMD_EXT = False
 
 from numpy import dot, zeros, dtype, float32 as REAL,\
@@ -98,7 +98,7 @@ import numpy as np
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
 from gensim.corpora.dictionary import Dictionary
 from six import string_types, iteritems
-from six.moves import xrange
+from six.moves import range
 from scipy import stats
 
 
@@ -154,12 +154,12 @@ class KeyedVectorsBase(utils.SaveLoad):
         vector_size = self.syn0.shape[1]
         if fvocab is not None:
             logger.info("storing vocabulary in %s", fvocab)
-            with utils.smart_open(fvocab, 'wb') as vout:
+            with utils.open(fvocab, 'wb') as vout:
                 for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
                     vout.write(utils.to_utf8("%s %s\n" % (word, vocab.count)))
         logger.info("storing %sx%s projection weights into %s", total_vec, vector_size, fname)
         assert (len(self.vocab), vector_size) == self.syn0.shape
-        with utils.smart_open(fname, 'wb') as fout:
+        with utils.open(fname, 'wb') as fout:
             fout.write(utils.to_utf8("%s %s\n" % (total_vec, vector_size)))
             # store in sorted order: most frequent words at the top
             for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
@@ -204,13 +204,13 @@ class KeyedVectorsBase(utils.SaveLoad):
         if fvocab is not None:
             logger.info("loading word counts from %s", fvocab)
             counts = {}
-            with utils.smart_open(fvocab) as fin:
+            with utils.open(fvocab, 'rb') as fin:
                 for line in fin:
                     word, count = utils.to_unicode(line).strip().split()
                     counts[word] = int(count)
 
         logger.info("loading projection weights from %s", fname)
-        with utils.smart_open(fname) as fin:
+        with utils.open(fname, 'rb') as fin:
             header = utils.to_unicode(fin.readline(), encoding=encoding)
             vocab_size, vector_size = (int(x) for x in header.split())  # throws for invalid file format
             if limit:
@@ -239,7 +239,7 @@ class KeyedVectorsBase(utils.SaveLoad):
 
             if binary:
                 binary_len = dtype(REAL).itemsize * vector_size
-                for _ in xrange(vocab_size):
+                for _ in range(vocab_size):
                     # mixed text and binary: read text first, then binary
                     word = []
                     while True:
@@ -254,7 +254,7 @@ class KeyedVectorsBase(utils.SaveLoad):
                     weights = fromstring(fin.read(binary_len), dtype=REAL)
                     add_word(word, weights)
             else:
-                for line_no in xrange(vocab_size):
+                for line_no in range(vocab_size):
                     line = fin.readline()
                     if line == b'':
                         raise EOFError("unexpected end of input; is count incorrect or file otherwise damaged?")
@@ -934,47 +934,48 @@ class EuclideanKeyedVectors(KeyedVectorsBase):
         ok_vocab = {w.upper(): v for w, v in reversed(ok_vocab)} if case_insensitive else dict(ok_vocab)
 
         sections, section = [], None
-        for line_no, line in enumerate(utils.smart_open(questions)):
-            # TODO: use level3 BLAS (=evaluate multiple questions at once), for speed
-            line = utils.to_unicode(line)
-            if line.startswith(': '):
-                # a new section starts => store the old section
-                if section:
-                    sections.append(section)
-                    self.log_accuracy(section)
-                section = {'section': line.lstrip(': ').strip(), 'correct': [], 'incorrect': []}
-            else:
-                if not section:
-                    raise ValueError("missing section header before line #%i in %s" % (line_no, questions))
-                try:
-                    if case_insensitive:
-                        a, b, c, expected = [word.upper() for word in line.split()]
-                    else:
-                        a, b, c, expected = [word for word in line.split()]
-                except ValueError:
-                    logger.info("skipping invalid line #%i in %s", line_no, questions)
-                    continue
-                if a not in ok_vocab or b not in ok_vocab or c not in ok_vocab or expected not in ok_vocab:
-                    logger.debug("skipping line #%i with OOV words: %s", line_no, line.strip())
-                    continue
-
-                original_vocab = self.vocab
-                self.vocab = ok_vocab
-                ignore = {a, b, c}  # input words to be ignored
-                predicted = None
-                # find the most likely prediction, ignoring OOV words and input words
-                sims = most_similar(self, positive=[b, c], negative=[a], topn=False, restrict_vocab=restrict_vocab)
-                self.vocab = original_vocab
-                for index in matutils.argsort(sims, reverse=True):
-                    predicted = self.index2word[index].upper() if case_insensitive else self.index2word[index]
-                    if predicted in ok_vocab and predicted not in ignore:
-                        if predicted != expected:
-                            logger.debug("%s: expected %s, predicted %s", line.strip(), expected, predicted)
-                        break
-                if predicted == expected:
-                    section['correct'].append((a, b, c, expected))
+        with utils.open(questions, 'rb') as f:
+            for line_no, line in enumerate(f):
+                # TODO: use level3 BLAS (=evaluate multiple questions at once), for speed
+                line = utils.to_unicode(line)
+                if line.startswith(': '):
+                    # a new section starts => store the old section
+                    if section:
+                        sections.append(section)
+                        self.log_accuracy(section)
+                    section = {'section': line.lstrip(': ').strip(), 'correct': [], 'incorrect': []}
                 else:
-                    section['incorrect'].append((a, b, c, expected))
+                    if not section:
+                        raise ValueError("missing section header before line #%i in %s" % (line_no, questions))
+                    try:
+                        if case_insensitive:
+                            a, b, c, expected = [word.upper() for word in line.split()]
+                        else:
+                            a, b, c, expected = [word for word in line.split()]
+                    except ValueError:
+                        logger.info("skipping invalid line #%i in %s", line_no, questions)
+                        continue
+                    if a not in ok_vocab or b not in ok_vocab or c not in ok_vocab or expected not in ok_vocab:
+                        logger.debug("skipping line #%i with OOV words: %s", line_no, line.strip())
+                        continue
+
+                    original_vocab = self.vocab
+                    self.vocab = ok_vocab
+                    ignore = {a, b, c}  # input words to be ignored
+                    predicted = None
+                    # find the most likely prediction, ignoring OOV words and input words
+                    sims = most_similar(self, positive=[b, c], negative=[a], topn=False, restrict_vocab=restrict_vocab)
+                    self.vocab = original_vocab
+                    for index in matutils.argsort(sims, reverse=True):
+                        predicted = self.index2word[index].upper() if case_insensitive else self.index2word[index]
+                        if predicted in ok_vocab and predicted not in ignore:
+                            if predicted != expected:
+                                logger.debug("%s: expected %s, predicted %s", line.strip(), expected, predicted)
+                            break
+                    if predicted == expected:
+                        section['correct'].append((a, b, c, expected))
+                    else:
+                        section['incorrect'].append((a, b, c, expected))
         if section:
             # store the last section, too
             sections.append(section)
@@ -1030,32 +1031,33 @@ class EuclideanKeyedVectors(KeyedVectorsBase):
         original_vocab = self.vocab
         self.vocab = ok_vocab
 
-        for line_no, line in enumerate(utils.smart_open(pairs)):
-            line = utils.to_unicode(line)
-            if line.startswith('#'):
-                # May be a comment
-                continue
-            else:
-                try:
-                    if case_insensitive:
-                        a, b, sim = [word.upper() for word in line.split(delimiter)]
-                    else:
-                        a, b, sim = [word for word in line.split(delimiter)]
-                    sim = float(sim)
-                except (ValueError, TypeError):
-                    logger.info('skipping invalid line #%d in %s', line_no, pairs)
+        with utils.open(pairs, 'rb') as f:
+            for line_no, line in enumerate(f):
+                line = utils.to_unicode(line)
+                if line.startswith('#'):
+                    # May be a comment
                     continue
-                if a not in ok_vocab or b not in ok_vocab:
-                    oov += 1
-                    if dummy4unknown:
-                        similarity_model.append(0.0)
-                        similarity_gold.append(sim)
+                else:
+                    try:
+                        if case_insensitive:
+                            a, b, sim = [word.upper() for word in line.split(delimiter)]
+                        else:
+                            a, b, sim = [word for word in line.split(delimiter)]
+                        sim = float(sim)
+                    except (ValueError, TypeError):
+                        logger.info('skipping invalid line #%d in %s', line_no, pairs)
                         continue
-                    else:
-                        logger.debug('skipping line #%d with OOV words: %s', line_no, line.strip())
-                        continue
-                similarity_gold.append(sim)  # Similarity from the dataset
-                similarity_model.append(self.similarity(a, b))  # Similarity from the model
+                    if a not in ok_vocab or b not in ok_vocab:
+                        oov += 1
+                        if dummy4unknown:
+                            similarity_model.append(0.0)
+                            similarity_gold.append(sim)
+                            continue
+                        else:
+                            logger.debug('skipping line #%d with OOV words: %s', line_no, line.strip())
+                            continue
+                    similarity_gold.append(sim)  # Similarity from the dataset
+                    similarity_model.append(self.similarity(a, b))  # Similarity from the model
         self.vocab = original_vocab
         spearman = stats.spearmanr(similarity_gold, similarity_model)
         pearson = stats.pearsonr(similarity_gold, similarity_model)
@@ -1084,7 +1086,7 @@ class EuclideanKeyedVectors(KeyedVectorsBase):
         if getattr(self, 'syn0norm', None) is None or replace:
             logger.info("precomputing L2-norms of word weight vectors")
             if replace:
-                for i in xrange(self.syn0.shape[0]):
+                for i in range(self.syn0.shape[0]):
                     self.syn0[i, :] /= sqrt((self.syn0[i, :] ** 2).sum(-1))
                 self.syn0norm = self.syn0
             else:

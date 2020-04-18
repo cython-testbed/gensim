@@ -81,7 +81,7 @@ from gensim.models.doc2vec import Doc2Vec as NewDoc2Vec
 from gensim.models.deprecated.old_saveload import SaveLoad
 
 from gensim import matutils  # utility fnc for pickling, common scipy operations etc
-from six.moves import xrange, zip
+from six.moves import zip, range
 from six import string_types, integer_types
 
 logger = logging.getLogger(__name__)
@@ -242,8 +242,8 @@ def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=N
     if doctag_locks is None:
         doctag_locks = model.docvecs.doctag_syn0_lockf
 
-    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab and
-                   model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
+    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab
+                   and model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
 
     for pos, word in enumerate(word_vocabs):
         reduced_window = model.random.randint(model.window)  # `b` in the original doc2vec code
@@ -298,8 +298,8 @@ def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None,
     if doctag_locks is None:
         doctag_locks = model.docvecs.doctag_syn0_lockf
 
-    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab and
-                   model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
+    word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab
+                   and model.wv.vocab[w].sample_int > model.random.rand() * 2**32]
     doctag_len = len(doctag_indexes)
     if doctag_len != model.dm_tag_count:
         return 0  # skip doc without expected number of doctag(s) (TODO: warn/pad?)
@@ -490,7 +490,7 @@ class DocvecsArray(SaveLoad):
             self.doctag_syn0 = empty((length, model.vector_size), dtype=REAL)
             self.doctag_syn0_lockf = ones((length,), dtype=REAL)  # zeros suppress learning
 
-        for i in xrange(length):
+        for i in range(length):
             # construct deterministic seed from index AND model seed
             seed = "%d %s" % (model.seed, self.index_to_doctag(i))
             self.doctag_syn0[i] = model.seeded_vector(seed)
@@ -510,7 +510,7 @@ class DocvecsArray(SaveLoad):
         if getattr(self, 'doctag_syn0norm', None) is None or replace:
             logger.info("precomputing L2-norms of doc weight vectors")
             if replace:
-                for i in xrange(self.doctag_syn0.shape[0]):
+                for i in range(self.doctag_syn0.shape[0]):
                     self.doctag_syn0[i, :] /= sqrt((self.doctag_syn0[i, :] ** 2).sum(-1))
                 self.doctag_syn0norm = self.doctag_syn0
             else:
@@ -965,7 +965,7 @@ class Doc2Vec(Word2Vec):
             KeyedVectors.save_word2vec_format(self.wv, fname, fvocab, binary, total_vec)
         # save document vectors
         if doctag_vec:
-            with utils.smart_open(fname, 'ab') as fout:
+            with utils.open(fname, 'ab') as fout:
                 if not word_vec:
                     total_vec = len(self.docvecs)
                     logger.info("storing %sx%s projection weights into %s", total_vec, self.vector_size, fname)
@@ -992,16 +992,17 @@ class TaggedBrownCorpus(object):
             fname = os.path.join(self.dirname, fname)
             if not os.path.isfile(fname):
                 continue
-            for item_no, line in enumerate(utils.smart_open(fname)):
-                line = utils.to_unicode(line)
-                # each file line is a single document in the Brown corpus
-                # each token is WORD/POS_TAG
-                token_tags = [t.split('/') for t in line.split() if len(t.split('/')) == 2]
-                # ignore words with non-alphabetic tags like ",", "!" etc (punctuation, weird stuff)
-                words = ["%s/%s" % (token.lower(), tag[:2]) for token, tag in token_tags if tag[:2].isalpha()]
-                if not words:  # don't bother sending out empty documents
-                    continue
-                yield TaggedDocument(words, ['%s_SENT_%s' % (fname, item_no)])
+            with utils.open(fname, 'rb') as f:
+                for item_no, line in enumerate(f):
+                    line = utils.to_unicode(line)
+                    # each file line is a single document in the Brown corpus
+                    # each token is WORD/POS_TAG
+                    token_tags = [t.split('/') for t in line.split() if len(t.split('/')) == 2]
+                    # ignore words with non-alphabetic tags like ",", "!" etc (punctuation, weird stuff)
+                    words = ["%s/%s" % (token.lower(), tag[:2]) for token, tag in token_tags if tag[:2].isalpha()]
+                    if not words:  # don't bother sending out empty documents
+                        continue
+                    yield TaggedDocument(words, ['%s_SENT_%s' % (fname, item_no)])
 
 
 class TaggedLineDocument(object):
@@ -1036,6 +1037,6 @@ class TaggedLineDocument(object):
                 yield TaggedDocument(utils.to_unicode(line).split(), [item_no])
         except AttributeError:
             # If it didn't work like a file, use it as a string filename
-            with utils.smart_open(self.source) as fin:
+            with utils.open(self.source, 'rb') as fin:
                 for item_no, line in enumerate(fin):
                     yield TaggedDocument(utils.to_unicode(line).split(), [item_no])

@@ -81,7 +81,7 @@ RE_P16 = re.compile(r'\[{2}(.*?)\]{2}', re.UNICODE)
 """Capture interlinks text and article linked"""
 RE_P17 = re.compile(
     r'(\n.{0,4}((bgcolor)|(\d{0,1}[ ]?colspan)|(rowspan)|(style=)|(class=)|(align=)|(scope=))(.*))|'
-    '(^.{0,2}((bgcolor)|(\d{0,1}[ ]?colspan)|(rowspan)|(style=)|(class=)|(align=))(.*))',
+    r'(^.{0,2}((bgcolor)|(\d{0,1}[ ]?colspan)|(rowspan)|(style=)|(class=)|(align=))(.*))',
     re.UNICODE
 )
 """Table markup"""
@@ -143,8 +143,8 @@ def filter_example(elem, text, *args, **kwargs):
     # regex is in the function call so that we do not pollute the wikicorpus
     # namespace do not do this in production as this function is called for
     # every element in the wiki dump
-    _regex_de_excellent = re.compile('.*\{\{(Exzellent.*?)\}\}[\s]*', flags=re.DOTALL)
-    _regex_de_featured = re.compile('.*\{\{(Lesenswert.*?)\}\}[\s]*', flags=re.DOTALL)
+    _regex_de_excellent = re.compile(r'.*\{\{(Exzellent.*?)\}\}[\s]*', flags=re.DOTALL)
+    _regex_de_featured = re.compile(r'.*\{\{(Lesenswert.*?)\}\}[\s]*', flags=re.DOTALL)
 
     if text is None:
         return False
@@ -164,23 +164,24 @@ def find_interlinks(raw):
 
     Returns
     -------
-    dict
-        Mapping from the linked article to the actual text found.
+    list
+        List of tuples in format [(linked article, the actual text found), ...].
 
     """
     filtered = filter_wiki(raw, promote_remaining=False, simplify_links=False)
     interlinks_raw = re.findall(RE_P16, filtered)
 
-    interlinks = {}
+    interlinks = []
     for parts in [i.split('|') for i in interlinks_raw]:
         actual_title = parts[0]
         try:
             interlink_text = parts[1]
-            interlinks[actual_title] = interlink_text
         except IndexError:
-            interlinks[actual_title] = actual_title
+            interlink_text = actual_title
+        interlink_tuple = (actual_title, interlink_text)
+        interlinks.append(interlink_tuple)
 
-    legit_interlinks = {i: j for i, j in interlinks.items() if '[' not in i and ']' not in i}
+    legit_interlinks = [(i, j) for i, j in interlinks if '[' not in i and ']' not in i]
     return legit_interlinks
 
 
@@ -289,10 +290,10 @@ def remove_template(s):
     # Find the start and end position of each template by finding the opening
     # '{{' and closing '}}'
     n_open, n_close = 0, 0
-    starts, ends = [], []
+    starts, ends = [], [-1]
     in_template = False
     prev_c = None
-    for i, c in enumerate(iter(s)):
+    for i, c in enumerate(s):
         if not in_template:
             if c == '{' and c == prev_c:
                 starts.append(i - 1)
@@ -310,7 +311,8 @@ def remove_template(s):
         prev_c = c
 
     # Remove all the templates
-    return ''.join([s[end + 1:start] for start, end in zip(starts + [None], [-1] + ends)])
+    starts.append(None)
+    return ''.join(s[end + 1:start] for end, start in zip(ends, starts))
 
 
 def remove_file(s):
@@ -699,7 +701,7 @@ class WikiCorpus(TextCorpus):
             logger.warn(
                 "user terminated iteration over Wikipedia corpus after %i documents with %i positions "
                 "(total %i articles, %i positions before pruning articles shorter than %i words)",
-                articles, positions, articles_all, positions_all, ARTICLE_MIN_WORDS
+                articles, positions, articles_all, positions_all, self.article_min_tokens
             )
         except PicklingError as exc:
             raise_from(PicklingError('Can not send filtering function {} to multiprocessing, '
@@ -708,7 +710,7 @@ class WikiCorpus(TextCorpus):
             logger.info(
                 "finished iterating over Wikipedia corpus of %i documents with %i positions "
                 "(total %i articles, %i positions before pruning articles shorter than %i words)",
-                articles, positions, articles_all, positions_all, ARTICLE_MIN_WORDS
+                articles, positions, articles_all, positions_all, self.article_min_tokens
             )
             self.length = articles  # cache corpus length
         finally:

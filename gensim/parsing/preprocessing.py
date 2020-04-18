@@ -8,7 +8,7 @@
 * :func:`~gensim.parsing.preprocessing.remove_stopwords` - remove all stopwords from string
 * :func:`~gensim.parsing.preprocessing.preprocess_string` -  preprocess string (in default NLP meaning)
 
-Examples:
+Examples
 ---------
 .. sourcecode:: pycon
 
@@ -390,7 +390,6 @@ def preprocess_documents(docs):
 
     Examples
     --------
-
     .. sourcecode:: pycon
 
         >>> from gensim.parsing.preprocessing import preprocess_documents
@@ -402,7 +401,7 @@ def preprocess_documents(docs):
 
 
 def read_file(path):
-    with utils.smart_open(path) as fin:
+    with utils.open(path, 'rb') as fin:
         return fin.read()
 
 

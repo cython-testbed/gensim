@@ -10,11 +10,11 @@
 from __future__ import with_statement
 
 import logging
+from collections import Counter
 
 from gensim import utils
 from gensim.corpora import IndexedCorpus
-from six import iterkeys
-from six.moves import xrange, zip as izip
+from six.moves import zip, range
 
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ class LowCorpus(IndexedCorpus):
                 all_terms.update(word for word, wordCnt in doc)
             all_terms = sorted(all_terms)  # sort the list of all words; rank in that list = word's integer id
             # build a mapping of word id(int) -> word (string)
-            self.id2word = dict(izip(xrange(len(all_terms)), all_terms))
+            self.id2word = dict(zip(range(len(all_terms)), all_terms))
         else:
             logger.info("using provided word mapping (%i ids)", len(id2word))
             self.id2word = id2word
@@ -131,7 +131,7 @@ class LowCorpus(IndexedCorpus):
 
         """
         # the first line in input data is the number of documents (integer). throws exception on bad input.
-        with utils.smart_open(self.fname) as fin:
+        with utils.open(self.fname, 'rb') as fin:
             try:
                 result = int(next(fin))
             except StopIteration:
@@ -159,25 +159,24 @@ class LowCorpus(IndexedCorpus):
         words = self.line2words(line)
 
         if self.use_wordids:
-            # get all distinct terms in this document, ignore unknown words
-            uniq_words = set(words).intersection(iterkeys(self.word2id))
-
             # the following creates a unique list of words *in the same order*
             # as they were in the input. when iterating over the documents,
             # the (word, count) pairs will appear in the same order as they
             # were in the input (bar duplicates), which looks better.
             # if this was not needed, we might as well have used useWords = set(words)
-            use_words, marker = [], set()
+            use_words, counts = [], Counter()
             for word in words:
-                if (word in uniq_words) and (word not in marker):
+                if word not in self.word2id:
+                    continue
+                if word not in counts:
                     use_words.append(word)
-                    marker.add(word)
+                counts[word] += 1
             # construct a list of (wordIndex, wordFrequency) 2-tuples
-            doc = [(self.word2id.get(w), words.count(w)) for w in use_words]
+            doc = [(self.word2id[w], counts[w]) for w in use_words]
         else:
-            uniq_words = set(words)
+            word_freqs = Counter(words)
             # construct a list of (word, wordFrequency) 2-tuples
-            doc = [(w, words.count(w)) for w in uniq_words]
+            doc = list(word_freqs.items())
 
         # return the document, then forget it and move on to the next one
         # note that this way, only one doc is stored in memory at a time, not the whole corpus
@@ -192,7 +191,7 @@ class LowCorpus(IndexedCorpus):
             Document in BoW format.
 
         """
-        with utils.smart_open(self.fname) as fin:
+        with utils.open(self.fname, 'rb') as fin:
             for lineno, line in enumerate(fin):
                 if lineno > 0:  # ignore the first line = number of documents
                     yield self.line2doc(line)
@@ -232,7 +231,7 @@ class LowCorpus(IndexedCorpus):
         logger.info("storing corpus in List-Of-Words format into %s" % fname)
         truncated = 0
         offsets = []
-        with utils.smart_open(fname, 'wb') as fout:
+        with utils.open(fname, 'wb') as fout:
             fout.write(utils.to_utf8('%i\n' % len(corpus)))
             for doc in corpus:
                 words = []
@@ -278,7 +277,7 @@ class LowCorpus(IndexedCorpus):
             [(0, 1), (3, 1), (4, 1)]
 
         """
-        with utils.smart_open(self.fname) as f:
+        with utils.open(self.fname, 'rb') as f:
             f.seek(offset)
             return self.line2doc(f.readline())
 

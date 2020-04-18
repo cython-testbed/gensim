@@ -83,7 +83,7 @@ class MalletCorpus(LowCorpus):
             Number of documents in file.
 
         """
-        with utils.smart_open(self.fname) as fin:
+        with utils.open(self.fname, 'rb') as fin:
             result = sum(1 for _ in fin)
         return result
 
@@ -96,7 +96,7 @@ class MalletCorpus(LowCorpus):
             Document in BoW format (+"document_id" and "lang" if metadata=True).
 
         """
-        with utils.smart_open(self.fname) as f:
+        with utils.open(self.fname, 'rb') as f:
             for line in f:
                 yield self.line2doc(line)
 
@@ -115,7 +115,6 @@ class MalletCorpus(LowCorpus):
 
         Examples
         --------
-
         .. sourcecode:: pycon
 
             >>> from gensim.test.utils import datapath
@@ -126,10 +125,11 @@ class MalletCorpus(LowCorpus):
             [(3, 1), (4, 1)]
 
         """
-        splited_line = [word for word in utils.to_unicode(line).strip().split(' ') if word]
-        docid, doclang, words = splited_line[0], splited_line[1], splited_line[2:]
+        split_line = utils.to_unicode(line).strip().split(None, 2)
+        docid, doclang = split_line[0], split_line[1]
+        words = split_line[2] if len(split_line) >= 3 else ''
 
-        doc = super(MalletCorpus, self).line2doc(' '.join(words))
+        doc = super(MalletCorpus, self).line2doc(words)
 
         if self.metadata:
             return doc, (docid, doclang)
@@ -180,7 +180,7 @@ class MalletCorpus(LowCorpus):
 
         truncated = 0
         offsets = []
-        with utils.smart_open(fname, 'wb') as fout:
+        with utils.open(fname, 'wb') as fout:
             for doc_id, doc in enumerate(corpus):
                 if metadata:
                     doc_id, doc_lang = doc[1]
@@ -231,6 +231,6 @@ class MalletCorpus(LowCorpus):
             [(4, 1)]
 
         """
-        with utils.smart_open(self.fname) as f:
+        with utils.open(self.fname, 'rb') as f:
             f.seek(offset)
             return self.line2doc(f.readline())

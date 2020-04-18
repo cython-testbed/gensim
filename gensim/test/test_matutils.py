@@ -60,7 +60,7 @@ def mean_absolute_difference(a, b):
 
 
 def dirichlet_expectation(alpha):
-    """For a vector :math:`\\theta \sim Dir(\\alpha)`, compute :math:`E[log \\theta]`.
+    r"""For a vector :math:`\theta \sim Dir(\alpha)`, compute :math:`E[log \theta]`.
 
     Parameters
     ----------
@@ -70,7 +70,7 @@ def dirichlet_expectation(alpha):
     Returns
     -------
     numpy.ndarray:
-        :math:`E[log \\theta]`
+        :math:`E[log \theta]`
 
     """
     if len(alpha.shape) == 1:
@@ -240,6 +240,30 @@ class UnitvecTestCase(unittest.TestCase):
         man_unit_vector = manual_unitvec(input_vector)
         self.assertTrue(np.allclose(unit_vector, man_unit_vector))
         self.assertTrue(np.issubdtype(unit_vector.dtype, np.floating))
+
+    def test_return_norm_zero_vector_scipy_sparse(self):
+        input_vector = sparse.csr_matrix([[]], dtype=np.int32)
+        return_value = matutils.unitvec(input_vector, return_norm=True)
+        self.assertTrue(isinstance(return_value, tuple))
+        norm = return_value[1]
+        self.assertTrue(isinstance(norm, float))
+        self.assertEqual(norm, 1.0)
+
+    def test_return_norm_zero_vector_numpy(self):
+        input_vector = np.array([], dtype=np.int32)
+        return_value = matutils.unitvec(input_vector, return_norm=True)
+        self.assertTrue(isinstance(return_value, tuple))
+        norm = return_value[1]
+        self.assertTrue(isinstance(norm, float))
+        self.assertEqual(norm, 1.0)
+
+    def test_return_norm_zero_vector_gensim_sparse(self):
+        input_vector = []
+        return_value = matutils.unitvec(input_vector, return_norm=True)
+        self.assertTrue(isinstance(return_value, tuple))
+        norm = return_value[1]
+        self.assertTrue(isinstance(norm, float))
+        self.assertEqual(norm, 1.0)
 
 
 if __name__ == '__main__':

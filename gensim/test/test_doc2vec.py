@@ -16,7 +16,7 @@ import unittest
 import os
 import six
 
-from six.moves import zip as izip
+from six.moves import zip, range
 from collections import namedtuple
 from testfixtures import log_capture
 
@@ -173,13 +173,24 @@ class TestDoc2VecModel(unittest.TestCase):
             sims_to_infer = loaded_model.docvecs.most_similar([doc0_inferred], topn=len(loaded_model.docvecs))
             self.assertTrue(sims_to_infer)
 
+    def testDoc2vecTrainParameters(self):
+
+        model = doc2vec.Doc2Vec(vector_size=50)
+        model.build_vocab(documents=list_corpus)
+
+        self.assertRaises(TypeError, model.train, corpus_file=11111)
+        self.assertRaises(TypeError, model.train, documents=11111)
+        self.assertRaises(TypeError, model.train, documents=sentences, corpus_file='test')
+        self.assertRaises(TypeError, model.train, documents=None, corpus_file=None)
+        self.assertRaises(TypeError, model.train, corpus_file=sentences)
+
     @unittest.skipIf(os.name == 'nt', "See another test for Windows below")
     def test_get_offsets_and_start_doctags(self):
         # Each line takes 6 bytes (including '\n' character)
         lines = ['line1\n', 'line2\n', 'line3\n', 'line4\n', 'line5\n']
         tmpf = get_tmpfile('gensim_doc2vec.tst')
 
-        with utils.smart_open(tmpf, 'wb', encoding='utf8') as fout:
+        with utils.open(tmpf, 'wb', encoding='utf8') as fout:
             for line in lines:
                 fout.write(utils.any2unicode(line))
 
@@ -213,7 +224,7 @@ class TestDoc2VecModel(unittest.TestCase):
         lines = ['line1\n', 'line2\n', 'line3\n', 'line4\n', 'line5\n']
         tmpf = get_tmpfile('gensim_doc2vec.tst')
 
-        with utils.smart_open(tmpf, 'wb', encoding='utf8') as fout:
+        with utils.open(tmpf, 'wb', encoding='utf8') as fout:
             for line in lines:
                 fout.write(utils.any2unicode(line))
 
@@ -246,7 +257,7 @@ class TestDoc2VecModel(unittest.TestCase):
         lines = ['line1\n', 'line2\n', 'line3\n', 'line4\n', 'line5\n']
         tmpf = get_tmpfile('gensim_doc2vec.tst')
 
-        with utils.smart_open(tmpf, 'wb', encoding='utf8') as fout:
+        with utils.open(tmpf, 'wb', encoding='utf8') as fout:
             for line in lines:
                 fout.write(utils.any2unicode(line))
 
@@ -340,8 +351,8 @@ class TestDoc2VecModel(unittest.TestCase):
         model = doc2vec.Doc2Vec(min_count=1)
         model.build_vocab(corpus)
         self.assertTrue(
-            model.docvecs.similarity_unseen_docs(model, rome_str, rome_str) >
-            model.docvecs.similarity_unseen_docs(model, rome_str, car_str)
+            model.docvecs.similarity_unseen_docs(model, rome_str, rome_str)
+            > model.docvecs.similarity_unseen_docs(model, rome_str, car_str)
         )
 
     def model_sanity(self, model, keep_training=True):
@@ -387,7 +398,7 @@ class TestDoc2VecModel(unittest.TestCase):
             tmpf = get_tmpfile('gensim_doc2vec.tst')
             model.save(tmpf)
             loaded = doc2vec.Doc2Vec.load(tmpf)
-            loaded.train(sentences, total_examples=loaded.corpus_count, epochs=loaded.epochs)
+            loaded.train(documents=sentences, total_examples=loaded.corpus_count, epochs=loaded.epochs)
 
     def test_training(self):
         """Test doc2vec training."""
@@ -561,9 +572,6 @@ class TestDoc2VecModel(unittest.TestCase):
 
     def test_parallel(self):
         """Test doc2vec parallel training."""
-        if doc2vec.FAST_VERSION < 0:  # don't test the plain NumPy version for parallelism (too slow)
-            return
-
         corpus = utils.RepeatCorpus(DocsLeeCorpus(), 10000)
 
         for workers in [2, 4]:
@@ -717,7 +725,7 @@ class ConcatenatedDoc2Vec(object):
 
     def __str__(self):
         """Abbreviated name, built from submodels' names"""
-        return "+".join([str(model) for model in self.models])
+        return "+".join(str(model) for model in self.models)
 
     @property
     def epochs(self):
@@ -776,7 +784,7 @@ def read_su_sentiment_rotten_tomatoes(dirname, lowercase=True):
         with open(os.path.join(dirname, 'datasetSplit.txt'), 'r') as splits:
             next(sentences)  # legend
             next(splits)     # legend
-            for sentence_line, split_line in izip(sentences, splits):
+            for sentence_line, split_line in zip(sentences, splits):
                 (id, text) = sentence_line.split('\t')
                 id = int(id)
                 text = text.rstrip()
@@ -812,11 +820,11 @@ def read_su_sentiment_rotten_tomatoes(dirname, lowercase=True):
             split = [None, 'train', 'test', 'dev'][split_i]
             phrases[id] = SentimentPhrase(words, [id], split, sentiment, sentence_id)
 
-    assert len([phrase for phrase in phrases if phrase.sentence_id is not None]) == len(info_by_sentence)  # all
+    assert sum(1 for phrase in phrases if phrase.sentence_id is not None) == len(info_by_sentence)  # all
     # counts don't match 8544, 2210, 1101 because 13 TRAIN and 1 DEV sentences are duplicates
-    assert len([phrase for phrase in phrases if phrase.split == 'train']) == 8531  # 'train'
-    assert len([phrase for phrase in phrases if phrase.split == 'test']) == 2210  # 'test'
-    assert len([phrase for phrase in phrases if phrase.split == 'dev']) == 1100  # 'dev'
+    assert sum(1 for phrase in phrases if phrase.split == 'train') == 8531  # 'train'
+    assert sum(1 for phrase in phrases if phrase.split == 'test') == 2210  # 'test'
+    assert sum(1 for phrase in phrases if phrase.split == 'dev') == 1100  # 'dev'
 
     logging.info(
         "loaded corpus with %i sentences and %i phrases from %s",
@@ -828,5 +836,4 @@ def read_su_sentiment_rotten_tomatoes(dirname, lowercase=True):
 
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.DEBUG)
-    logging.info("using optimization %s", doc2vec.FAST_VERSION)
     unittest.main()

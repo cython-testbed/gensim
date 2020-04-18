@@ -43,7 +43,7 @@ DEF MAX_SUBWORDS = 1000
 
 
 cdef void prepare_c_structures_for_batch(
-        vector[vector[string]] &sentences, int sample, int hs, int window, int *total_words,
+        vector[vector[string]] &sentences, int sample, int hs, int window, long long *total_words,
         int *effective_words, int *effective_sentences, unsigned long long *next_random, cvocab_t *vocab,
         int *sentence_idx, np.uint32_t *indexes, int *codelens, np.uint8_t **codes, np.uint32_t **points,
         np.uint32_t *reduced_windows, int *subwords_idx_len, np.uint32_t **subwords_idx) nogil:
@@ -122,8 +122,8 @@ def train_epoch_sg(
     # For learning rate updates
     cdef int cur_epoch = _cur_epoch
     cdef int num_epochs = model.epochs
-    cdef int expected_examples = (-1 if _expected_examples is None else _expected_examples)
-    cdef int expected_words = (-1 if _expected_words is None else _expected_words)
+    cdef long long expected_examples = (-1 if _expected_examples is None else _expected_examples)
+    cdef long long expected_words = (-1 if _expected_words is None else _expected_words)
     cdef REAL_t start_alpha = model.alpha
     cdef REAL_t end_alpha = model.min_alpha
     cdef REAL_t _alpha = get_alpha(model.alpha, end_alpha, cur_epoch, num_epochs)
@@ -133,7 +133,8 @@ def train_epoch_sg(
 
     cdef int i, j, k
     cdef int effective_words = 0, effective_sentences = 0
-    cdef int total_effective_words = 0, total_sentences = 0, total_words = 0
+    cdef long long total_sentences = 0
+    cdef long long total_effective_words = 0, total_words = 0
     cdef int sent_idx, idx_start, idx_end
 
     init_ft_config(&c, model, _alpha, _work, _l1)
@@ -168,15 +169,9 @@ def train_epoch_sg(
                         if j == i:
                             continue
                         if c.hs:
-                            fasttext_fast_sentence_sg_hs(
-                                c.points[j], c.codes[j], c.codelens[j], c.syn0_vocab, c.syn0_ngrams, c.syn1, c.size,
-                                c.indexes[i], c.subwords_idx[i], c.subwords_idx_len[i], c.alpha, c.work, c.neu1,
-                                c.word_locks_vocab, c.word_locks_ngrams)
+                            fasttext_fast_sentence_sg_hs(&c, i, j)
                         if c.negative:
-                            c.next_random = fasttext_fast_sentence_sg_neg(
-                                c.negative, c.cum_table, c.cum_table_len, c.syn0_vocab, c.syn0_ngrams, c.syn1neg, c.size,
-                                c.indexes[j], c.indexes[i], c.subwords_idx[i], c.subwords_idx_len[i], c.alpha, c.work,
-                                c.neu1, c.next_random, c.word_locks_vocab, c.word_locks_ngrams)
+                            fasttext_fast_sentence_sg_neg(&c, i, j)
 
             total_sentences += sentences.size()
             total_effective_words += effective_words
@@ -217,8 +212,8 @@ def train_epoch_cbow(model, corpus_file, offset, _cython_vocab, _cur_epoch, _exp
     # For learning rate updates
     cdef int cur_epoch = _cur_epoch
     cdef int num_epochs = model.epochs
-    cdef int expected_examples = (-1 if _expected_examples is None else _expected_examples)
-    cdef int expected_words = (-1 if _expected_words is None else _expected_words)
+    cdef long long expected_examples = (-1 if _expected_examples is None else _expected_examples)
+    cdef long long expected_words = (-1 if _expected_words is None else _expected_words)
     cdef REAL_t start_alpha = model.alpha
     cdef REAL_t end_alpha = model.min_alpha
     cdef REAL_t _alpha = get_alpha(model.alpha, end_alpha, cur_epoch, num_epochs)
@@ -228,7 +223,8 @@ def train_epoch_cbow(model, corpus_file, offset, _cython_vocab, _cur_epoch, _exp
 
     cdef int i, j, k
     cdef int effective_words = 0, effective_sentences = 0
-    cdef int total_effective_words = 0, total_sentences = 0, total_words = 0
+    cdef long long total_sentences = 0
+    cdef long long total_effective_words = 0, total_words = 0
     cdef int sent_idx, idx_start, idx_end
 
     init_ft_config(&c, model, _alpha, _work, _neu1)
@@ -261,15 +257,9 @@ def train_epoch_cbow(model, corpus_file, offset, _cython_vocab, _cur_epoch, _exp
                         k = idx_end
 
                     if c.hs:
-                        fasttext_fast_sentence_cbow_hs(
-                            c.points[i], c.codes[i], c.codelens, c.neu1, c.syn0_vocab, c.syn0_ngrams, c.syn1, c.size,
-                            c.indexes, c.subwords_idx, c.subwords_idx_len, c.alpha, c.work, i, j, k, c.cbow_mean,
-                            c.word_locks_vocab, c.word_locks_ngrams)
+                        fasttext_fast_sentence_cbow_hs(&c, i, j, k)
                     if c.negative:
-                        c.next_random = fasttext_fast_sentence_cbow_neg(
-                            c.negative, c.cum_table, c.cum_table_len, c.codelens, c.neu1, c.syn0_vocab, c.syn0_ngrams,
-                            c.syn1neg, c.size, c.indexes, c.subwords_idx, c.subwords_idx_len, c.alpha, c.work, i, j, k,
-                            c.cbow_mean, c.next_random, c.word_locks_vocab, c.word_locks_ngrams)
+                        fasttext_fast_sentence_cbow_neg(&c, i, j, k)
 
             total_sentences += sentences.size()
             total_effective_words += effective_words

@@ -14,6 +14,7 @@ import logging
 import math
 
 from gensim import utils
+from gensim.utils import deprecated
 
 import numpy as np
 import scipy.sparse
@@ -23,8 +24,8 @@ from scipy.linalg.lapack import get_lapack_funcs
 from scipy.linalg.special_matrices import triu
 from scipy.special import psi  # gamma function utils
 
-from six import iteritems, itervalues, string_types
-from six.moves import xrange, zip as izip
+from six import iteritems, itervalues
+from six.moves import zip, range
 
 
 logger = logging.getLogger(__name__)
@@ -140,8 +141,8 @@ def corpus2csc(corpus, num_terms=None, dtype=np.float64, num_docs=None, num_nnz=
             if printprogress and docno % printprogress == 0:
                 logger.info("PROGRESS: at document #%i/%i", docno, num_docs)
             posnext = posnow + len(doc)
-            indices[posnow: posnext] = [feature_id for feature_id, _ in doc]
-            data[posnow: posnext] = [feature_weight for _, feature_weight in doc]
+            # zip(*doc) transforms doc to (token_indices, token_counts]
+            indices[posnow: posnext], data[posnow: posnext] = zip(*doc) if doc else ([], [])
             indptr.append(posnext)
             posnow = posnext
         assert posnow == num_nnz, "mismatch between supplied and computed number of non-zeros"
@@ -152,8 +153,11 @@ def corpus2csc(corpus, num_terms=None, dtype=np.float64, num_docs=None, num_nnz=
         for docno, doc in enumerate(corpus):
             if printprogress and docno % printprogress == 0:
                 logger.info("PROGRESS: at document #%i", docno)
-            indices.extend([feature_id for feature_id, _ in doc])
-            data.extend([feature_weight for _, feature_weight in doc])
+
+            # zip(*doc) transforms doc to (token_indices, token_counts]
+            doc_indices, doc_data = zip(*doc) if doc else ([], [])
+            indices.extend(doc_indices)
+            data.extend(doc_data)
             num_nnz += len(doc)
             indptr.append(num_nnz)
         if num_terms is None:
@@ -499,7 +503,13 @@ def corpus2dense(corpus, num_terms, num_docs=None, dtype=np.float32):
             result[:, docno] = sparse2full(doc, num_terms)
         assert docno + 1 == num_docs
     else:
-        result = np.column_stack(sparse2full(doc, num_terms) for doc in corpus)
+        # The below used to be a generator, but NumPy deprecated generator as of 1.16 with:
+        # """
+        # FutureWarning: arrays to stack must be passed as a "sequence" type such as list or tuple.
+        # Support for non-sequence iterables such as generators is deprecated as of NumPy 1.16 and will raise an error
+        # in the future.
+        # """
+        result = np.column_stack([sparse2full(doc, num_terms) for doc in corpus])
     return result.astype(dtype)
 
 
@@ -586,7 +596,7 @@ class Sparse2Corpus(object):
             Document in BoW format.
 
         """
-        for indprev, indnow in izip(self.sparse.indptr, self.sparse.indptr[1:]):
+        for indprev, indnow in zip(self.sparse.indptr, self.sparse.indptr[1:]):
             yield list(zip(self.sparse.indices[indprev:indnow], self.sparse.data[indprev:indnow]))
 
     def __len__(self):
@@ -688,7 +698,7 @@ def unitvec(vec, norm='l2', return_norm=False):
     ----------
     vec : {numpy.ndarray, scipy.sparse, list of (int, float)}
         Input vector in any format
-    norm : {'l1', 'l2'}, optional
+    norm : {'l1', 'l2', 'unique'}, optional
         Metric to normalize in.
     return_norm : bool, optional
         Return the length of vector `vec`, in addition to the normalized vector itself?
@@ -705,8 +715,9 @@ def unitvec(vec, norm='l2', return_norm=False):
     Zero-vector will be unchanged.
 
     """
-    if norm not in ('l1', 'l2'):
-        raise ValueError("'%s' is not a supported norm. Currently supported norms are 'l1' and 'l2'." % norm)
+    supported_norms = ('l1', 'l2', 'unique')
+    if norm not in supported_norms:
+        raise ValueError("'%s' is not a supported norm. Currently supported norms are %s." % (norm, supported_norms))
 
     if scipy.sparse.issparse(vec):
         vec = vec.tocsr()
@@ -714,6 +725,8 @@ def unitvec(vec, norm='l2', return_norm=False):
             veclen = np.sum(np.abs(vec.data))
         if norm == 'l2':
             veclen = np.sqrt(np.sum(vec.data ** 2))
+        if norm == 'unique':
+            veclen = vec.nnz
         if veclen > 0.0:
             if np.issubdtype(vec.dtype, np.integer):
                 vec = vec.astype(np.float)
@@ -724,7 +737,7 @@ def unitvec(vec, norm='l2', return_norm=False):
                 return vec
         else:
             if return_norm:
-                return vec, 1.
+                return vec, 1.0
             else:
                 return vec
 
@@ -732,7 +745,12 @@ def unitvec(vec, norm='l2', return_norm=False):
         if norm == 'l1':
             veclen = np.sum(np.abs(vec))
         if norm == 'l2':
-            veclen = blas_nrm2(vec)
+            if vec.size == 0:
+                veclen = 0.0
+            else:
+                veclen = blas_nrm2(vec)
+        if norm == 'unique':
+            veclen = np.count_nonzero(vec)
         if veclen > 0.0:
             if np.issubdtype(vec.dtype, np.integer):
                 vec = vec.astype(np.float)
@@ -742,20 +760,25 @@ def unitvec(vec, norm='l2', return_norm=False):
                 return blas_scal(1.0 / veclen, vec).astype(vec.dtype)
         else:
             if return_norm:
-                return vec, 1
+                return vec, 1.0
             else:
                 return vec
 
     try:
         first = next(iter(vec))  # is there at least one element?
     except StopIteration:
-        return vec
+        if return_norm:
+            return vec, 1.0
+        else:
+            return vec
 
     if isinstance(first, (tuple, list)) and len(first) == 2:  # gensim sparse format
         if norm == 'l1':
             length = float(sum(abs(val) for _, val in vec))
         if norm == 'l2':
             length = 1.0 * math.sqrt(sum(val ** 2 for _, val in vec))
+        if norm == 'unique':
+            length = 1.0 * len(vec)
         assert length > 0.0, "sparse documents must not contain any explicit zero entries"
         if return_norm:
             return ret_normalized_vec(vec, length), length
@@ -796,6 +819,9 @@ def cossim(vec1, vec2):
     return result
 
 
+@deprecated(
+    "Function will be removed in 4.0.0, use "
+    "gensim.similarities.termsim.SparseTermSimilarityMatrix.inner_product instead")
 def softcossim(vec1, vec2, similarity_matrix):
     """Get Soft Cosine Measure between two vectors given a term similarity matrix.
 
@@ -816,8 +842,10 @@ def softcossim(vec1, vec2, similarity_matrix):
     vec2 : list of (int, float)
         A document vector in the BoW format.
     similarity_matrix : {:class:`scipy.sparse.csc_matrix`, :class:`scipy.sparse.csr_matrix`}
-        A term similarity matrix, typically produced by
-        :meth:`~gensim.models.keyedvectors.WordEmbeddingsKeyedVectors.similarity_matrix`.
+        A term similarity matrix. If the matrix is :class:`scipy.sparse.csr_matrix`, it is going
+        to be transposed. If you rely on the fact that there is at most a constant number of
+        non-zero elements in a single column, it is your responsibility to ensure that the matrix
+        is symmetric.
 
     Returns
     -------
@@ -850,8 +878,8 @@ def softcossim(vec1, vec2, similarity_matrix):
     vec2 = dict(vec2)
     word_indices = sorted(set(chain(vec1, vec2)))
     dtype = similarity_matrix.dtype
-    vec1 = np.array([vec1[i] if i in vec1 else 0 for i in word_indices], dtype=dtype)
-    vec2 = np.array([vec2[i] if i in vec2 else 0 for i in word_indices], dtype=dtype)
+    vec1 = np.fromiter((vec1[i] if i in vec1 else 0 for i in word_indices), dtype=dtype, count=len(word_indices))
+    vec2 = np.fromiter((vec2[i] if i in vec2 else 0 for i in word_indices), dtype=dtype, count=len(word_indices))
     dense_matrix = similarity_matrix[[[i] for i in word_indices], word_indices].todense()
     vec1len = vec1.T.dot(dense_matrix).dot(vec1)[0, 0]
     vec2len = vec2.T.dot(dense_matrix).dot(vec2)[0, 0]
@@ -1215,7 +1243,7 @@ class MmWriter(object):
         self.fname = fname
         if fname.endswith(".gz") or fname.endswith('.bz2'):
             raise NotImplementedError("compressed output not supported with MmWriter")
-        self.fout = utils.smart_open(self.fname, 'wb+')  # open for both reading and writing
+        self.fout = utils.open(self.fname, 'wb+')  # open for both reading and writing
         self.headers_written = False
 
     def write_headers(self, num_docs, num_terms, num_nnz):
@@ -1395,184 +1423,6 @@ class MmWriter(object):
 
 
 try:
-    # try to load fast, cythonized code if possible
-    from gensim.corpora._mmreader import MmReader
+    from gensim.corpora._mmreader import MmReader  # noqa: F401
 except ImportError:
-    FAST_VERSION = -1
-
-    class MmReader(object):
-        """Matrix market file reader, used internally in :class:`~gensim.corpora.mmcorpus.MmCorpus`.
-
-        Wrap a term-document matrix on disk (in matrix-market format), and present it
-        as an object which supports iteration over the rows (~documents).
-
-        Attributes
-        ----------
-        num_docs : int
-            Number of documents in market matrix file.
-        num_terms : int
-            Number of terms.
-        num_nnz : int
-            Number of non-zero terms.
-
-        Notes
-        -----
-        Note that the file is read into memory one document at a time, not the whole matrix at once
-        (unlike e.g. `scipy.io.mmread` and other implementations).
-        This allows us to process corpora which are larger than the available RAM.
-
-        """
-        def __init__(self, input, transposed=True):
-            """
-
-            Parameters
-            ----------
-            input : {str, file-like object}
-                Path to the input file in MM format or a file-like object that supports `seek()`
-                (e.g. smart_open objects).
-            transposed : bool, optional
-                Do lines represent `doc_id, term_id, value`, instead of `term_id, doc_id, value`?
-
-            """
-            logger.info("initializing corpus reader from %s", input)
-            self.input, self.transposed = input, transposed
-            with utils.open_file(self.input) as lines:
-                try:
-                    header = utils.to_unicode(next(lines)).strip()
-                    if not header.lower().startswith('%%matrixmarket matrix coordinate real general'):
-                        raise ValueError(
-                            "File %s not in Matrix Market format with coordinate real general; instead found: \n%s" %
-                            (self.input, header)
-                        )
-                except StopIteration:
-                    pass
-
-                self.num_docs = self.num_terms = self.num_nnz = 0
-                for lineno, line in enumerate(lines):
-                    line = utils.to_unicode(line)
-                    if not line.startswith('%'):
-                        self.num_docs, self.num_terms, self.num_nnz = (int(x) for x in line.split())
-                        if not self.transposed:
-                            self.num_docs, self.num_terms = self.num_terms, self.num_docs
-                        break
-
-            logger.info(
-                "accepted corpus with %i documents, %i features, %i non-zero entries",
-                self.num_docs, self.num_terms, self.num_nnz
-            )
-
-        def __len__(self):
-            """Get the corpus size: total number of documents."""
-            return self.num_docs
-
-        def __str__(self):
-            return ("MmCorpus(%i documents, %i features, %i non-zero entries)" %
-                    (self.num_docs, self.num_terms, self.num_nnz))
-
-        def skip_headers(self, input_file):
-            """Skip file headers that appear before the first document.
-
-            Parameters
-            ----------
-            input_file : iterable of str
-                Iterable taken from file in MM format.
-
-            """
-            for line in input_file:
-                if line.startswith(b'%'):
-                    continue
-                break
-
-        def __iter__(self):
-            """Iterate through all documents in the corpus.
-
-            Notes
-            ------
-            Note that the total number of vectors returned is always equal to the number of rows specified
-            in the header: empty documents are inserted and yielded where appropriate, even if they are not explicitly
-            stored in the Matrix Market file.
-
-            Yields
-            ------
-            (int, list of (int, number))
-                Document id and document in sparse bag-of-words format.
-
-            """
-            with utils.file_or_filename(self.input) as lines:
-                self.skip_headers(lines)
-
-                previd = -1
-                for line in lines:
-                    docid, termid, val = utils.to_unicode(line).split()  # needed for python3
-                    if not self.transposed:
-                        termid, docid = docid, termid
-                    # -1 because matrix market indexes are 1-based => convert to 0-based
-                    docid, termid, val = int(docid) - 1, int(termid) - 1, float(val)
-                    assert previd <= docid, "matrix columns must come in ascending order"
-                    if docid != previd:
-                        # change of document: return the document read so far (its id is prevId)
-                        if previd >= 0:
-                            yield previd, document  # noqa:F821
-
-                        # return implicit (empty) documents between previous id and new id
-                        # too, to keep consistent document numbering and corpus length
-                        for previd in xrange(previd + 1, docid):
-                            yield previd, []
-
-                        # from now on start adding fields to a new document, with a new id
-                        previd = docid
-                        document = []
-
-                    document.append((termid, val,))  # add another field to the current document
-
-            # handle the last document, as a special case
-            if previd >= 0:
-                yield previd, document
-
-            # return empty documents between the last explicit document and the number
-            # of documents as specified in the header
-            for previd in xrange(previd + 1, self.num_docs):
-                yield previd, []
-
-        def docbyoffset(self, offset):
-            """Get the document at file offset `offset` (in bytes).
-
-            Parameters
-            ----------
-            offset : int
-                File offset, in bytes, of the desired document.
-
-            Returns
-            ------
-            list of (int, str)
-                Document in sparse bag-of-words format.
-
-            """
-            # empty documents are not stored explicitly in MM format, so the index marks
-            # them with a special offset, -1.
-            if offset == -1:
-                return []
-            if isinstance(self.input, string_types):
-                fin, close_fin = utils.smart_open(self.input), True
-            else:
-                fin, close_fin = self.input, False
-
-            fin.seek(offset)  # works for gzip/bz2 input, too
-            previd, document = -1, []
-            for line in fin:
-                docid, termid, val = line.split()
-                if not self.transposed:
-                    termid, docid = docid, termid
-                # -1 because matrix market indexes are 1-based => convert to 0-based
-                docid, termid, val = int(docid) - 1, int(termid) - 1, float(val)
-                assert previd <= docid, "matrix columns must come in ascending order"
-                if docid != previd:
-                    if previd >= 0:
-                        break
-                    previd = docid
-
-                document.append((termid, val,))  # add another field to the current document
-
-            if close_fin:
-                fin.close()
-            return document
+    raise utils.NO_CYTHON

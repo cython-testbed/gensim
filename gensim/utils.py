@@ -40,9 +40,9 @@ import numbers
 import scipy.sparse
 
 from six import iterkeys, iteritems, itervalues, u, string_types, unichr
-from six.moves import xrange
+from six.moves import range
 
-from smart_open import smart_open
+from smart_open import open
 
 from multiprocessing import cpu_count
 
@@ -54,6 +54,15 @@ logger = logging.getLogger(__name__)
 
 PAT_ALPHABETIC = re.compile(r'(((?![\d])\w)+)', re.UNICODE)
 RE_HTML_ENTITY = re.compile(r'&(#?)([xX]?)(\w{1,8});', re.UNICODE)
+
+NO_CYTHON = RuntimeError(
+    "Cython extensions are unavailable. "
+    "Without them, this gensim functionality is disabled. "
+    "If you've installed from a package, ask the package maintainer to include Cython extensions. "
+    "If you're building gensim from source yourself, run `python setup.py build_ext --inplace` "
+    "and retry. "
+)
+"""An exception that gensim code raises when Cython extensions are unavailable."""
 
 
 def get_random_state(seed):
@@ -128,7 +137,7 @@ def file_or_filename(input):
     """
     if isinstance(input, string_types):
         # input was a filename: open as file
-        return smart_open(input)
+        return open(input, 'rb')
     else:
         # input already a file-like object; just reset to the beginning
         input.seek(0)
@@ -447,8 +456,8 @@ class SaveLoad(object):
         """
         def mmap_error(obj, filename):
             return IOError(
-                'Cannot mmap compressed object %s in file %s. ' % (obj, filename) +
-                'Use `load(fname, mmap=None)` or uncompress files manually.'
+                'Cannot mmap compressed object %s in file %s. ' % (obj, filename)
+                + 'Use `load(fname, mmap=None)` or uncompress files manually.'
             )
 
         for attrib in getattr(self, '__recursive_saveloads', []):
@@ -732,7 +741,8 @@ def get_max_id(corpus):
     """
     maxid = -1
     for document in corpus:
-        maxid = max(maxid, max([-1] + [fieldid for fieldid, _ in document]))  # [-1] to avoid exceptions from max(empty)
+        if document:
+            maxid = max(maxid, max(fieldid for fieldid, _ in document))
     return maxid
 
 
@@ -772,7 +782,7 @@ class FakeDict(object):
             Pair of (id, token).
 
         """
-        for i in xrange(self.num_terms):
+        for i in range(self.num_terms):
             yield i, str(i)
 
     def keys(self):
@@ -980,7 +990,7 @@ class RepeatCorpusNTimes(SaveLoad):
         self.n = n
 
     def __iter__(self):
-        for _ in xrange(self.n):
+        for _ in range(self.n):
             for document in self.corpus:
                 yield document
 
@@ -1359,7 +1369,7 @@ def pickle(obj, fname, protocol=2):
         Pickle protocol number. Default is 2 in order to support compatibility across python 2.x and 3.x.
 
     """
-    with smart_open(fname, 'wb') as fout:  # 'b' for binary, needed on Windows
+    with open(fname, 'wb') as fout:  # 'b' for binary, needed on Windows
         _pickle.dump(obj, fout, protocol=protocol)
 
 
@@ -1377,7 +1387,7 @@ def unpickle(fname):
         Python object loaded from `fname`.
 
     """
-    with smart_open(fname, 'rb') as f:
+    with open(fname, 'rb') as f:
         # Because of loading from S3 load can't be used (missing readline in smart_open)
         if sys.version_info > (3, 0):
             return _pickle.load(f, encoding='latin1')
@@ -1718,7 +1728,7 @@ def mock_data_row(dim=1000, prob_nnz=0.5, lam=1.0):
 
     """
     nnz = np.random.uniform(size=(dim,))
-    return [(i, float(np.random.poisson(lam=lam) + 1.0)) for i in xrange(dim) if nnz[i] < prob_nnz]
+    return [(i, float(np.random.poisson(lam=lam) + 1.0)) for i in range(dim) if nnz[i] < prob_nnz]
 
 
 def mock_data(n_items=1000, dim=1000, prob_nnz=0.5, lam=1.0):
@@ -1742,7 +1752,7 @@ def mock_data(n_items=1000, dim=1000, prob_nnz=0.5, lam=1.0):
         Gensim-style corpus.
 
     """
-    return [mock_data_row(dim=dim, prob_nnz=prob_nnz, lam=lam) for _ in xrange(n_items)]
+    return [mock_data_row(dim=dim, prob_nnz=prob_nnz, lam=lam) for _ in range(n_items)]
 
 
 def prune_vocab(vocab, min_reduce, trim_rule=None):
@@ -1962,7 +1972,6 @@ def strided_windows(ndarray, window_size):
 
     Examples
     --------
-
     .. sourcecode:: pycon
 
         >>> from gensim.utils import strided_windows
@@ -2079,7 +2088,7 @@ def save_as_line_sentence(corpus, filename):
     corpus : iterable of iterables of strings
 
     """
-    with smart_open(filename, mode='wb', encoding='utf8') as fout:
+    with open(filename, mode='wb', encoding='utf8') as fout:
         for sentence in corpus:
             line = any2unicode(' '.join(sentence) + '\n')
             fout.write(line)

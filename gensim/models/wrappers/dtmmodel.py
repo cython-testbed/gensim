@@ -25,7 +25,6 @@ You have 2 ways, how to make binaries:
 
 Examples
 --------
-
 .. sourcecode:: pycon
 
     >>> from gensim.test.utils import common_corpus, common_dictionary
@@ -98,8 +97,10 @@ class DtmModel(utils.SaveLoad):
              Max em optimization iterations in LDA.
         alpha : int, optional
             Hyperparameter that affects sparsity of the document-topics for the LDA models in each timeslice.
-        top_chain_var : int, optional
-            Hyperparameter that affects.
+        top_chain_var : float, optional
+            This hyperparameter controls one of the key aspect of topic evolution which is the speed at which
+            these topics evolve. A smaller top_chain_var leads to similar word distributions over multiple timeslice.
+
         rng_seed : int, optional
              Random seed.
         initialize_lda : bool, optional
@@ -323,7 +324,7 @@ class DtmModel(utils.SaveLoad):
         # write out the corpus in a file format that DTM understands:
         corpora.BleiCorpus.save_corpus(self.fcorpustxt(), corpus)
 
-        with utils.smart_open(self.ftimeslices(), 'wb') as fout:
+        with utils.open(self.ftimeslices(), 'wb') as fout:
             fout.write(utils.to_utf8(str(len(self.time_slices)) + "\n"))
             for sl in time_slices:
                 fout.write(utils.to_utf8(str(sl) + "\n"))
@@ -532,7 +533,7 @@ class DtmModel(utils.SaveLoad):
             warnings.warn("The parameter `num_words` is deprecated, will be removed in 4.0.0, use `topn` instead.")
             topn = num_words
 
-        return ' + '.join(['%.3f*%s' % v for v in self.show_topic(topicid, time, topn=topn)])
+        return ' + '.join('%.3f*%s' % v for v in self.show_topic(topicid, time, topn=topn))
 
     def dtm_vis(self, corpus, time):
         """Get data specified by pyLDAvis format.
