@@ -703,12 +703,12 @@ class TestFastTextModel(unittest.TestCase):
 
     def online_sanity(self, model):
         terro, others = [], []
-        for l in list_corpus:
-            if 'terrorism' in l:
-                terro.append(l)
+        for x in list_corpus:
+            if 'terrorism' in x:
+                terro.append(x)
             else:
-                others.append(l)
-        self.assertTrue(all('terrorism' not in l for l in others))
+                others.append(x)
+        self.assertTrue(all('terrorism' not in x for x in others))
         model.build_vocab(others)
         model.train(others, total_examples=model.corpus_count, epochs=model.epochs)
         # checks that `vectors` is different from `vectors_vocab`
@@ -865,6 +865,27 @@ class TestFastTextModel(unittest.TestCase):
         model_gensim.train(lee_data, total_examples=model_gensim.corpus_count, epochs=model_gensim.epochs)
         self.assertFalse((orig0 == model_gensim.wv.vectors[0]).all())  # vector should vary after training
         self.compare_with_wrapper(model_gensim, model_wrapper)
+
+    def test_vocab_pruning(self):
+        """Does the model correctly interpret the max_final_vocab parameter?"""
+        sentences = [
+            ["graph", "system"],
+            ["graph", "system"],
+            ["system", "eps"],
+            ["graph", "system"],
+        ]
+        model = FT_gensim(sentences, size=10, min_count=2, max_final_vocab=2)
+        self.assertEqual(len(model.wv.vocab), 2)
+        self.assertEqual(model.wv.vocab['graph'].count, 3)
+        self.assertEqual(model.wv.vocab['system'].count, 4)
+
+        model = FT_gensim(sentences, size=10, min_count=2, max_final_vocab=1)
+        self.assertEqual(len(model.wv.vocab), 1)
+        self.assertEqual(model.wv.vocab['system'].count, 4)
+
+        model = FT_gensim(sentences, size=10, min_count=4)
+        self.assertEqual(len(model.wv.vocab), 1)
+        self.assertEqual(model.wv.vocab['system'].count, 4)
 
 
 with open(datapath('toy-data.txt')) as fin:
@@ -1468,7 +1489,7 @@ def _read_wordvectors_using_fasttext(fasttext_fname, words):
         stdout=subprocess.PIPE)
     words_str = '\n'.join(words)
     out, _ = process.communicate(input=words_str.encode("utf-8"))
-    return np.array([line_to_array(l) for l in out.splitlines()], dtype=np.float32)
+    return np.array([line_to_array(line) for line in out.splitlines()], dtype=np.float32)
 
 
 @unittest.skipIf(not os.environ.get("FT_HOME", None), "FT_HOME env variable not set, skipping test")
